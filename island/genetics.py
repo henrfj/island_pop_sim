@@ -45,3 +45,27 @@ def multinomial_birth_counts(n_BB: int, n_Bb: int, n_bb: int, births: int, rng: 
     p = 1.0 - q
     counts = rng.multinomial(births, (p * p, 2 * p * q, q * q))
     return int(counts[0]), int(counts[1]), int(counts[2])
+
+
+def birth_counts_from_parent_pools(first_counts, second_counts, births: int,
+                                   rng: np.random.Generator) -> Tuple[int, int, int]:
+    """Draw offspring from two explicit parental genotype pools.
+
+    Each parent contributes one allele. The pools may be the same clan or two different
+    clans, so genotype inheritance and social pairing stay part of the same draw.
+    """
+    first = np.asarray(first_counts, dtype=np.int64)
+    second = np.asarray(second_counts, dtype=np.int64)
+    if births <= 0 or first.sum() <= 0 or second.sum() <= 0:
+        return (0, 0, 0)
+    q_first = effective_allele_frequency(int(first[0]), int(first[1]), int(first[2]))
+    q_second = effective_allele_frequency(int(second[0]), int(second[1]), int(second[2]))
+    p_first = 1.0 - q_first
+    p_second = 1.0 - q_second
+    probabilities = (
+        p_first * p_second,
+        p_first * q_second + q_first * p_second,
+        q_first * q_second,
+    )
+    counts = rng.multinomial(births, probabilities)
+    return int(counts[0]), int(counts[1]), int(counts[2])

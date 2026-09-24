@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Generated simulation outputs
+fig*.png
+island_replay.html
+
+# Editor / OS noise
+.vscode/
+.DS_Store
+Thumbs.db

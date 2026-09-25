@@ -38,6 +38,18 @@ selection experiments.
 8. Newcomers become established and damaged land recovers gradually. Routine automatic
 	assimilation is disabled; membership changes through families and rare secession.
 
+Culture traits belong to clan records, not clan name roots. Cross-clan families can found
+a persistent mixed clan with a weighted blend of both parent cultures and one bounded
+mutation; secession creates a mutated branch culture. Trait values remain fixed after a
+clan is created. The replay reports clan populations and, separately, populations carrying
+positive, negative, or neutral values for each culture trait.
+
+Gene traits are genotype-linked selective effects, not permanent guarantees. In a finite
+population the recessive blue-eye allele can rise during Landfall's ash recovery and later
+be lost through drift or fixation, especially over thousands of five-year turns. A stable
+long-run polymorphism would require larger effective populations, ongoing gene mutation,
+or frequency-dependent selection.
+
 There is no hard carrying-capacity cull. Land productivity limits food production; food
 stores buffer shocks; declining food security lowers fertility before severe shortage
 raises mortality. The defaults are exploratory assumptions, not fitted historical

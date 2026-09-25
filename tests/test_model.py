@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 
 from island import conflict, demography, genetics, resources, tribes
-from island.config import SimulationConfig, default_valleys
+from island.config import CultureTraits, SimulationConfig, default_valleys
 from island.world import Island
 
 
@@ -49,6 +49,14 @@ class PrimitiveTests(unittest.TestCase):
         self.assertTrue(name.startswith("Tideborn "))
         self.assertNotIn(name, existing)
 
+    def test_mixed_culture_is_mutated_but_bounded(self):
+        first = CultureTraits(warlike=0.10)
+        second = CultureTraits(stationary=0.10)
+        mixed = tribes.mixed_culture(first, second, 1.0, np.random.default_rng(4))
+        self.assertTrue(0.0 <= mixed.warlike <= 0.20)
+        self.assertTrue(0.0 <= mixed.stationary <= 0.20)
+        self.assertNotEqual(mixed, first)
+
 
 class IslandTests(unittest.TestCase):
     def make_island(self, turns=12, eruptions=True):
@@ -72,6 +80,15 @@ class IslandTests(unittest.TestCase):
                 self.assertGreaterEqual(valley["food_stock"], 0.0)
                 self.assertGreaterEqual(valley["land_health"], 0.0)
                 self.assertLessEqual(valley["land_health"], 1.0)
+                self.assertIn("trait_populations", valley)
+                self.assertIn("clan_traits", valley)
+
+    def test_cross_clan_births_can_create_mixed_clan(self):
+        island = self.make_island(turns=1, eruptions=False)
+        island.cfg.tribes.mixed_clan_chance = 1.0
+        island.valleys[0].cohorts["Cloudfolk"] = island.valleys[0].cohorts["Tideborn"].copy()
+        island._births(1)
+        self.assertTrue(any("-" in name for name in island.cfg.traits.clans))
 
     def test_calm_baseline_does_not_use_shortage_mortality(self):
         island = self.make_island(turns=40, eruptions=False)

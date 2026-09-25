@@ -22,6 +22,8 @@ class Valley:
     food_security: float = 1.0
     ash_bonus_turns: int = 0
     erupted_this_turn: bool = False
+    shock_memory: float = 0.0
+    surplus_memory: float = 0.0
 
     @property
     def population(self) -> int:
@@ -78,6 +80,7 @@ class Island:
             ))
         self.n = len(self.valleys)
         self.path_neighbors = {i: {(i - 1) % self.n, (i + 1) % self.n} for i in range(self.n)}
+        self.mixed_clans: Dict[frozenset[str], str] = {}
         self.history: List[dict] = []
         self.event_log: List[dict] = []
 
@@ -93,6 +96,25 @@ class Island:
         valley.clean_empty_tribes()
         return before - valley.population
 
+    def _weighted_gene_effect(self, valley: Valley, effect: tuple[float, float, float]) -> float:
+        adults = sum(
+            (counts[:, demography.ADULT, :].sum(axis=0)
+             for counts in valley.cohorts.values()),
+            np.zeros(3, dtype=np.int64),
+        )
+        total = int(adults.sum())
+        if total == 0:
+            return 0.0
+        return float(np.dot(adults, np.asarray(effect, dtype=float)) / total)
+
+    def _genotype_migration_drive(self, counts: np.ndarray) -> float:
+        adults = counts[:, demography.ADULT, :].sum(axis=0)
+        total = int(adults.sum())
+        if total == 0:
+            return 0.0
+        return float(np.dot(
+            adults, np.asarray(self.cfg.traits.genes.migration_drive, dtype=float)) / total)
+
     def _erupt(self, turn: int) -> List[dict]:
         for valley in self.valleys:
             valley.erupted_this_turn = False
@@ -103,7 +125,16 @@ class Island:
         valley = self.valleys[index]
         cfg = self.cfg.volcano
         mortality = self.rng.uniform(cfg.immediate_mortality_min, cfg.immediate_mortality_max)
-        deaths = self._thin_all(valley, 1.0 - mortality)
+        before = valley.population
+        fire_resistance = np.asarray(self.cfg.traits.genes.fire_resistance, dtype=float)
+        for clan, counts in valley.cohorts.items():
+            culture = self.cfg.traits.culture(clan)
+            vulnerability = 1.0 + 0.10 * culture.strength_in_numbers
+            survival = 1.0 - mortality * vulnerability * (1.0 - fire_resistance)
+            valley.cohorts[clan] = self.rng.binomial(
+                counts, np.clip(survival, 0.0, 1.0)).astype(np.int64)
+        valley.clean_empty_tribes()
+        deaths = before - valley.population
         store_fraction = self.rng.uniform(cfg.store_destruction_min, cfg.store_destruction_max)
         food_destroyed = valley.food_stock * store_fraction
         valley.food_stock -= food_destroyed
@@ -111,6 +142,7 @@ class Island:
         valley.land_health *= 1.0 - land_damage
         valley.erupted_this_turn = True
         valley.ash_bonus_turns = cfg.ash_bonus_turns
+        valley.shock_memory = min(1.0, valley.shock_memory + 0.70)
         return [{
             "turn": turn,
             "year": turn * self.cfg.years_per_turn,
@@ -125,7 +157,18 @@ class Island:
         ledgers = []
         for valley in self.valleys:
             stages = valley.stage_counts
-            effective_land = valley.land_health
+            effective_land = valley.land_health * (
+                1.0 + self._weighted_gene_effect(
+                    valley, self.cfg.traits.genes.ash_farming))
+            stationary_share = 0.0
+            migratory_share = 0.0
+            total_people = max(valley.population, 1)
+            for clan, counts in valley.cohorts.items():
+                share = counts.sum() / total_people
+                culture = self.cfg.traits.culture(clan)
+                stationary_share += share * culture.stationary
+                migratory_share += share * culture.migratory
+            effective_land *= 1.0 + 0.15 * stationary_share - 0.08 * migratory_share
             if valley.ash_bonus_turns > 0:
                 effective_land *= 1.0 + self.cfg.volcano.ash_bonus
             food = resources.update_food(
@@ -136,6 +179,12 @@ class Island:
             valley.food_stock = food.ending_stock
             valley.food_security = resources.smoothed_security(
                 valley.food_security, food.security, self.cfg.food)
+            stock_ratio = valley.food_stock / max(valley.storage_limit, 1.0)
+            good_year = valley.food_security >= 0.92 and stock_ratio >= 0.35
+            valley.surplus_memory = min(
+                1.0,
+                0.82 * valley.surplus_memory + (0.18 if good_year else 0.0),
+            )
             baseline_deaths = 0
             shortage_deaths = 0
             for tribe, counts in valley.cohorts.items():
@@ -186,6 +235,10 @@ class Island:
             valley = self.valleys[origin]
             available_by_tribe = {tribe: counts.copy() for tribe, counts in tribe_counts.items()}
             expected_households = valley.population * cfg.households_per_1000_people / 1000.0
+            stock_ratio = valley.food_stock / max(valley.storage_limit, 1.0)
+            surplus = max(0.0, stock_ratio - cfg.surplus_stock_threshold)
+            expected_households *= 1.0 + cfg.surplus_emigration_bonus * (
+                valley.surplus_memory + surplus)
             shortage = max(0.0, 1.0 - valley.food_security)
             if shortage > 0 and self.rng.random() < cfg.shortage_wave_chance * shortage:
                 expected_households += cfg.shortage_wave_households * shortage
@@ -196,7 +249,12 @@ class Island:
                 if not tribe_names:
                     break
                 tribe_weights = np.asarray(
-                    [available_by_tribe[name].sum() for name in tribe_names], dtype=float)
+                    [available_by_tribe[name].sum() * (
+                        1.0 + self.cfg.traits.culture(name).migratory
+                        - 0.6 * self.cfg.traits.culture(name).stationary
+                        + self._genotype_migration_drive(available_by_tribe[name]))
+                     for name in tribe_names], dtype=float)
+                tribe_weights = np.maximum(tribe_weights, 0.01)
                 tribe = str(self.rng.choice(tribe_names, p=tribe_weights / tribe_weights.sum()))
                 counts = available_by_tribe[tribe]
                 available = int(counts.sum())
@@ -223,7 +281,9 @@ class Island:
                 source_delta -= selected
                 water = destination not in self.path_neighbors[origin]
                 route = "canoe" if water else "path"
-                if water and self.rng.random() < cfg.storm_chance:
+                storm_chance = cfg.storm_chance * (
+                    1.0 + 0.35 * self.cfg.traits.culture(tribe).migratory)
+                if water and self.rng.random() < min(1.0, storm_chance):
                     ledger[origin]["storm_deaths"] += family_size
                     events_out.append({
                         "turn": turn, "year": turn * self.cfg.years_per_turn,
@@ -272,12 +332,25 @@ class Island:
             shortage = max(0.0, cfg.shortage_threshold - valley.food_security) / max(
                 cfg.shortage_threshold, 1e-9)
             damage_pressure = max(0.0, 1.0 - valley.land_health)
-            probability = min(1.0, cfg.base_chance + cfg.shortage_pressure * shortage
-                              + 0.10 * damage_pressure)
+            total_people = sum(int(counts.sum()) for counts in tribe_counts.values())
+            cultural_pressure = 0.0
+            if total_people:
+                cultural_pressure = sum(
+                    counts.sum() * max(
+                        0.0,
+                        1.0 + 1.2 * self.cfg.traits.culture(clan).warlike
+                        - self.cfg.traits.culture(clan).peaceful)
+                    for clan, counts in tribe_counts.items()) / total_people
+            probability = min(1.0, cultural_pressure * (
+                cfg.base_chance + cfg.shortage_pressure * shortage
+                + 0.10 * damage_pressure))
             if self.rng.random() >= probability:
                 continue
             split = conflict.partition_factions(
-                tribe_counts, self.cfg.tribes.clan_cohesion, self.rng)
+                tribe_counts,
+                min(1.0, self.cfg.tribes.clan_cohesion
+                    + self.cfg.tribes.shock_cohesion_bonus * valley.shock_memory),
+                self.rng)
             planned.append((index, split, probability))
 
         events_out = []
@@ -295,10 +368,19 @@ class Island:
             displaced_by_clan = {}
             deaths = 0
             for clan in valley.cohorts:
+                culture = self.cfg.traits.culture(clan)
+                war_resistance = np.asarray(self.cfg.traits.genes.war_resistance)
+                resistance = war_resistance + 0.12 * culture.warlike
+                vulnerability = (1.0 + 0.12 * culture.strength_in_numbers
+                                 + 0.18 * culture.peaceful)
                 winners = self.rng.binomial(
-                    winning_side[clan], 1.0 - cfg.winner_casualty_rate).astype(np.int64)
+                    winning_side[clan], np.clip(
+                        1.0 - cfg.winner_casualty_rate * vulnerability * (1.0 - resistance),
+                        0.0, 1.0)).astype(np.int64)
                 losers = self.rng.binomial(
-                    losing_side[clan], 1.0 - cfg.loser_casualty_rate).astype(np.int64)
+                    losing_side[clan], np.clip(
+                        1.0 - cfg.loser_casualty_rate * vulnerability * (1.0 - resistance),
+                        0.0, 1.0)).astype(np.int64)
                 deaths += int(winning_side[clan].sum() + losing_side[clan].sum()
                               - winners.sum() - losers.sum())
                 displaced_count = int(round(losers.sum() * cfg.displacement_fraction))
@@ -318,6 +400,10 @@ class Island:
                 seceded_name = tribes.unique_branch_name(
                     largest_displaced_clan, existing_names, self.cfg.tribes)
                 displaced_by_clan[seceded_name] = displaced_by_clan.pop(largest_displaced_clan)
+                self.cfg.traits.clans[seceded_name] = tribes.mixed_culture(
+                    self.cfg.traits.culture(largest_displaced_clan),
+                    self.cfg.traits.culture(largest_displaced_clan),
+                    self.cfg.tribes.culture_mutation_band, self.rng)
 
             valley.cohorts = survivors_by_clan
             food_fraction = self.rng.uniform(cfg.food_destruction_min, cfg.food_destruction_max)
@@ -325,6 +411,7 @@ class Island:
             valley.food_stock -= food_destroyed
             land_damage = self.rng.uniform(cfg.land_damage_min, cfg.land_damage_max)
             valley.land_health *= 1.0 - land_damage
+            valley.shock_memory = min(1.0, valley.shock_memory + 0.35)
 
             refugee_count = sum(int(counts.sum()) for counts in displaced_by_clan.values())
             destination = self._destination(index)
@@ -380,8 +467,17 @@ class Island:
             adults = sum(adult_by_tribe.values())
             births = demography.expected_births(
                 adults, valley.food_security, self.cfg.demography, self.rng)
+            births = int(round(births * (
+                1.0 + self.cfg.demography.surplus_fertility_bonus
+                * valley.surplus_memory)))
             if births > 0 and adults > 0:
                 tribe_names = list(adult_by_tribe)
+                strength = sum(
+                    adult_by_tribe[tribe]
+                    * self.cfg.traits.culture(tribe).strength_in_numbers
+                    for tribe in tribe_names
+                ) / adults
+                births = int(round(births * (1.0 + 0.15 * strength)))
                 shares = np.asarray([adult_by_tribe[name] for name in tribe_names], dtype=float)
                 shares /= shares.sum()
                 pair_weights = np.outer(shares, shares)
@@ -408,15 +504,36 @@ class Island:
                                 ESTABLISHED, demography.CHILD, :] += genotype_counts
                             continue
                         cross_tribe_births += pair_births
+                        parent_key = frozenset((first_tribe, second_tribe))
+                        mixed_name = self.mixed_clans.get(parent_key)
+                        if (mixed_name is None
+                            and "-" not in first_tribe
+                            and "-" not in second_tribe
+                            and self.rng.random() < self.cfg.tribes.mixed_clan_chance):
+                            existing_names = {
+                                name for current_valley in self.valleys
+                                for name in current_valley.cohorts
+                            }
+                            mixed_name = tribes.unique_mixed_name(
+                                first_tribe, second_tribe, existing_names)
+                            self.mixed_clans[parent_key] = mixed_name
+                            self.cfg.traits.clans[mixed_name] = tribes.mixed_culture(
+                                self.cfg.traits.culture(first_tribe),
+                                self.cfg.traits.culture(second_tribe),
+                                self.cfg.tribes.culture_mutation_band, self.rng)
                         first, second = tribes.allocate_mixed_children(
                             genotype_counts, 0.5, shares[first_index], self.cfg.tribes, self.rng)
-                        valley.ensure_tribe(first_tribe)[
-                            ESTABLISHED, demography.CHILD, :] += first
-                        valley.ensure_tribe(second_tribe)[
-                            ESTABLISHED, demography.CHILD, :] += second
+                        if mixed_name is not None:
+                            valley.ensure_tribe(mixed_name)[
+                                ESTABLISHED, demography.CHILD, :] += genotype_counts
+                        else:
+                            valley.ensure_tribe(first_tribe)[
+                                ESTABLISHED, demography.CHILD, :] += first
+                            valley.ensure_tribe(second_tribe)[
+                                ESTABLISHED, demography.CHILD, :] += second
                         pair_details.append({
                             "first": first_tribe, "second": second_tribe,
-                            "children": pair_births,
+                            "children": pair_births, "clan": mixed_name,
                         })
                 if pair_details:
                     events_out.append({
@@ -438,6 +555,7 @@ class Island:
                 counts[NEWCOMER] = 0
             valley.land_health += (1.0 - valley.land_health) * recovery
             valley.land_health = min(max(valley.land_health, 0.0), 1.0)
+            valley.shock_memory *= self.cfg.tribes.shock_memory_decay
             if valley.ash_bonus_turns > 0:
                 valley.ash_bonus_turns -= 1
 
@@ -469,6 +587,29 @@ class Island:
         valleys = []
         for valley in self.valleys:
             q = valley.q
+            clan_populations = {name: int(counts.sum())
+                                for name, counts in valley.cohorts.items()}
+            trait_populations = {
+                trait: {
+                    "positive": sum(
+                        clan_populations.get(clan, 0)
+                        for clan in clan_populations
+                        if getattr(self.cfg.traits.culture(clan), trait) > 0
+                    ),
+                    "negative": sum(
+                        clan_populations.get(clan, 0)
+                        for clan in clan_populations
+                        if getattr(self.cfg.traits.culture(clan), trait) < 0
+                    ),
+                    "neutral": sum(
+                        clan_populations.get(clan, 0)
+                        for clan in clan_populations
+                        if getattr(self.cfg.traits.culture(clan), trait) == 0
+                    ),
+                }
+                for trait in ("warlike", "peaceful", "strength_in_numbers",
+                              "migratory", "stationary")
+            }
             valleys.append({
                 "name": valley.name,
                 "population": valley.population,
@@ -485,8 +626,15 @@ class Island:
                 "food_security": valley.food_security,
                 "land_health": valley.land_health,
                 "ash_bonus_turns": valley.ash_bonus_turns,
+                "shock_memory": valley.shock_memory,
+                "surplus_memory": valley.surplus_memory,
                 "eruption": valley.erupted_this_turn,
-                "tribes": {name: int(counts.sum()) for name, counts in valley.cohorts.items()},
+                "tribes": clan_populations,
+                "clan_traits": {
+                    clan: asdict(self.cfg.traits.culture(clan))
+                    for clan in clan_populations
+                },
+                "trait_populations": trait_populations,
             })
         return {
             "turn": turn,

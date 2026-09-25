@@ -1,6 +1,6 @@
 """Configuration for the five-year, food-mediated island simulation."""
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,7 @@ class DemographyConfig:
     shortage_mortality_child: float = 0.20
     shortage_mortality_adult: float = 0.10
     shortage_mortality_elder: float = 0.28
+    surplus_fertility_bonus: float = 0.18
 
 
 @dataclass
@@ -59,30 +60,68 @@ class MigrationConfig:
     water_cost: float = 3.0
     storm_chance: float = 0.08
     clan_destination_pull: float = 0.20
+    surplus_emigration_bonus: float = 0.80
+    surplus_stock_threshold: float = 0.55
 
 
 @dataclass
 class TribeConfig:
     clan_endogamy: float = 0.20
     clan_cohesion: float = 0.30
+    shock_cohesion_bonus: float = 0.25
+    shock_memory_decay: float = 0.82
     local_child_influence: float = 0.20
+    mixed_clan_chance: float = 0.35
+    culture_mutation_band: float = 1.0
     minimum_independent_population: int = 20
     secession_suffixes: tuple[str, ...] = (
         "West", "East", "Upper", "Lower", "River", "Ash",
     )
 
 
+@dataclass(frozen=True)
+class GeneTraits:
+    """Genotype-indexed effects in BB, Bb, bb order."""
+    fire_resistance: tuple[float, float, float] = (0.18, 0.08, -0.04)
+    war_resistance: tuple[float, float, float] = (0.12, 0.02, -0.06)
+    ash_farming: tuple[float, float, float] = (-0.08, 0.04, 0.16)
+    migration_drive: tuple[float, float, float] = (-0.04, 0.08, 0.18)
+
+
+@dataclass(frozen=True)
+class CultureTraits:
+    warlike: float = 0.0
+    peaceful: float = 0.0
+    strength_in_numbers: float = 0.0
+    migratory: float = 0.0
+    stationary: float = 0.0
+
+
+@dataclass
+class TraitConfig:
+    genes: GeneTraits = field(default_factory=GeneTraits)
+    clans: Dict[str, CultureTraits] = field(default_factory=lambda: {
+        "Tideborn": CultureTraits(migratory=0.10),
+        "Cloudfolk": CultureTraits(stationary=0.10),
+        "Reedkin": CultureTraits(peaceful=0.10),
+        "Ashclan": CultureTraits(warlike=0.10),
+    })
+
+    def culture(self, clan: str) -> CultureTraits:
+        return self.clans.get(clan, CultureTraits())
+
+
 @dataclass
 class VolcanoConfig:
     eruption_interval_turns: int = 4
-    immediate_mortality_min: float = 0.05
-    immediate_mortality_max: float = 0.12
-    store_destruction_min: float = 0.35
-    store_destruction_max: float = 0.70
-    land_damage_min: float = 0.45
-    land_damage_max: float = 0.75
+    immediate_mortality_min: float = 0.00
+    immediate_mortality_max: float = 0.03
+    store_destruction_min: float = 0.05
+    store_destruction_max: float = 0.20
+    land_damage_min: float = 0.10
+    land_damage_max: float = 0.25
     forced_displacement_fraction: float = 0.12
-    land_recovery_fraction: float = 0.18
+    land_recovery_fraction: float = 0.35
     ash_bonus: float = 0.15
     ash_bonus_turns: int = 4
 
@@ -106,13 +145,14 @@ class ConflictConfig:
 
 @dataclass
 class SimulationConfig:
-    turns: int = 800
+    turns: int = 8000
     years_per_turn: int = 5
     seed: int = 20260923
     demography: DemographyConfig = field(default_factory=DemographyConfig)
     food: FoodConfig = field(default_factory=FoodConfig)
     migration: MigrationConfig = field(default_factory=MigrationConfig)
     tribes: TribeConfig = field(default_factory=TribeConfig)
+    traits: TraitConfig = field(default_factory=TraitConfig)
     volcano: VolcanoConfig = field(default_factory=VolcanoConfig)
     conflict: ConflictConfig = field(default_factory=ConflictConfig)
 
@@ -132,6 +172,8 @@ class SimulationConfig:
             "clan_destination_pull": self.migration.clan_destination_pull,
             "clan_endogamy": self.tribes.clan_endogamy,
             "clan_cohesion": self.tribes.clan_cohesion,
+            "shock_memory_decay": self.tribes.shock_memory_decay,
+            "mixed_clan_chance": self.tribes.mixed_clan_chance,
         }
         for name, value in probabilities.items():
             if not 0.0 <= value <= 1.0:
@@ -144,6 +186,8 @@ class SimulationConfig:
             raise ValueError("food scales must be positive")
         if self.demography.fertility_full_security <= 0:
             raise ValueError("fertility_full_security must be positive")
+        if self.tribes.culture_mutation_band < 0:
+            raise ValueError("culture_mutation_band must be nonnegative")
 
 
 def default_valleys() -> List[ValleySpec]:

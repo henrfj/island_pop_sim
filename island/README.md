@@ -10,8 +10,21 @@ Run it from the repository root:
 uv run python -m island.run_sim
 ```
 
+Useful variants:
+
+```powershell
+uv run python -m island.run_sim --seed 20260923
+uv run python -m island.run_sim --scenario tideborn-defensive
+uv run python -m island.run_sim --blackwake off
+uv run python -m island.run_sim --scenario tideborn-defensive --blackwake on
+```
+
 The command prints a summary and writes `island_replay.html`, which opens directly in a
 browser without a server.
+
+`uv run python -m island.experiments` now also writes `island_experiments.html`, an
+aggregate diagnostics report with population, allele, food, and cumulative death charts
+across many seeds.
 
 ## State
 
@@ -41,8 +54,16 @@ selection experiments.
 Culture traits belong to clan records, not clan name roots. Cross-clan families can found
 a persistent mixed clan with a weighted blend of both parent cultures and one bounded
 mutation; secession creates a mutated branch culture. Trait values remain fixed after a
-clan is created. The replay reports clan populations and, separately, populations carrying
-positive, negative, or neutral values for each culture trait.
+clan is created. The replay keeps the map focused on clan presence and moves active clan
+trait detail plus mortality, genotype-population, and `bb`-population debugging into the
+lower report panels.
+
+The default volcanic scenario now also includes a late raider arrival at year 2000. That
+clan is an all-`bb`, highly xenophobic, warlike expedition that tends to move as a single
+mass, strips land while present, gets first claim on food during partial shortages, and
+usually departs again within roughly 50 to 250 years. The intent is to create a follow-up
+pressure on the original Tideborn niche without adding a whole new subsystem for bespoke
+historical powers.
 
 Gene traits are genotype-linked selective effects, not permanent guarantees. In a finite
 population the recessive blue-eye allele can rise during Landfall's ash recovery and later

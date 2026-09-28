@@ -1,10 +1,11 @@
 """Five-year island simulation with overlapping cohorts, food stocks, and tribes."""
+from dataclasses import replace
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 import numpy as np
 
 from . import conflict, demography, genetics, resources, sampling, tribes
-from .config import SimulationConfig, ValleySpec
+from .config import ArrivalEventConfig, SimulationConfig, ValleySpec
 
 NEWCOMER, ESTABLISHED = range(2)
 SHAPE = (2, 3, 3)  # residency, life stage, genotype
@@ -79,10 +80,139 @@ class Island:
                 ash_bonus_turns=spec.initial_ash_bonus_turns,
             ))
         self.n = len(self.valleys)
+        self.founding_clans = tuple(dict.fromkeys(spec.tribe for spec in valley_specs))
         self.path_neighbors = {i: {(i - 1) % self.n, (i + 1) % self.n} for i in range(self.n)}
         self.mixed_clans: Dict[frozenset[str], str] = {}
+        self.arrival_schedule: Dict[int, List[ArrivalEventConfig]] = {}
+        self.arrival_by_clan: Dict[str, ArrivalEventConfig] = {
+            arrival.clan: arrival for arrival in config.arrivals
+        }
+        for arrival in config.arrivals:
+            self.arrival_schedule.setdefault(arrival.turn, []).append(arrival)
         self.history: List[dict] = []
         self.event_log: List[dict] = []
+        self._reset_tracking()
+
+    def _reset_tracking(self) -> None:
+        self.history = []
+        self.event_log = []
+        self.mixed_clans = {}
+        self.cumulative_deaths_by_source = {
+            "eruption": 0,
+            "baseline": 0,
+            "shortage": 0,
+            "storm": 0,
+            "war": 0,
+        }
+        self.cumulative_baseline_deaths_by_stage = {
+            stage: 0 for stage in demography.LIFE_STAGES
+        }
+        self.cumulative_deaths_by_genotype = {
+            genotype: 0 for genotype in genetics.GENOTYPES
+        }
+        self.cumulative_deaths_by_clan: Dict[str, int] = {
+            clan: 0 for clan in self.founding_clans
+        }
+        self.clan_lifecycles: Dict[str, dict] = {}
+        self.active_arrivals: Dict[str, dict] = {}
+        for clan in self.founding_clans:
+            self._register_clan(clan, 0, "founding")
+
+    def _find_valley_index(self, name: str) -> int:
+        for index, valley in enumerate(self.valleys):
+            if valley.name == name:
+                return index
+        raise ValueError(f"unknown valley {name!r}")
+
+    def _register_clan(self, clan: str, turn: int, origin: str,
+                       parents: Optional[List[str]] = None,
+                       valley: Optional[str] = None) -> None:
+        if clan in self.clan_lifecycles:
+            return
+        self.cumulative_deaths_by_clan.setdefault(clan, 0)
+        self.clan_lifecycles[clan] = {
+            "birth_turn": turn,
+            "birth_year": turn * self.cfg.years_per_turn,
+            "origin": origin,
+            "parents": list(parents or []),
+            "birth_valley": valley,
+            "extinct_turn": None,
+            "extinct_year": None,
+        }
+
+    def _genotype_totals(self, counts: np.ndarray) -> np.ndarray:
+        values = np.asarray(counts, dtype=np.int64)
+        if values.ndim == 3:
+            return values.sum(axis=(0, 1))
+        if values.ndim == 2:
+            return values.sum(axis=0)
+        raise ValueError("unsupported cohort shape")
+
+    def _record_deaths(self, source: str, deaths_by_clan: Dict[str, np.ndarray]) -> int:
+        total_deaths = 0
+        for clan, dead_counts in deaths_by_clan.items():
+            dead = np.asarray(dead_counts, dtype=np.int64)
+            clan_deaths = int(dead.sum())
+            if clan_deaths <= 0:
+                continue
+            total_deaths += clan_deaths
+            self.cumulative_deaths_by_clan[clan] = (
+                self.cumulative_deaths_by_clan.get(clan, 0) + clan_deaths
+            )
+            for genotype, count in zip(genetics.GENOTYPES, self._genotype_totals(dead)):
+                self.cumulative_deaths_by_genotype[genotype] += int(count)
+        self.cumulative_deaths_by_source[source] += total_deaths
+        return total_deaths
+
+    def _diff_counts(self, before: Dict[str, np.ndarray],
+                     after: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        delta = {}
+        for clan, before_counts in before.items():
+            after_counts = after.get(clan)
+            if after_counts is None:
+                diff = before_counts.copy()
+            else:
+                diff = before_counts - after_counts
+            if int(diff.sum()) > 0:
+                delta[clan] = diff
+        return delta
+
+    def _island_clan_populations(self) -> Dict[str, int]:
+        populations: Dict[str, int] = {}
+        for valley in self.valleys:
+            for clan, counts in valley.cohorts.items():
+                populations[clan] = populations.get(clan, 0) + int(counts.sum())
+        return populations
+
+    def _record_clan_extinctions(self, previous_populations: Dict[str, int],
+                                 turn: int) -> List[dict]:
+        current_populations = self._island_clan_populations()
+        events_out = []
+        for clan, previous in previous_populations.items():
+            if previous <= 0 or current_populations.get(clan, 0) > 0:
+                continue
+            lifecycle = self.clan_lifecycles.setdefault(clan, {
+                "birth_turn": 0,
+                "birth_year": 0,
+                "origin": "unknown",
+                "parents": [],
+                "birth_valley": None,
+                "extinct_turn": None,
+                "extinct_year": None,
+            })
+            if lifecycle["extinct_turn"] is not None:
+                continue
+            lifecycle["extinct_turn"] = turn
+            lifecycle["extinct_year"] = turn * self.cfg.years_per_turn
+            events_out.append({
+                "turn": turn,
+                "year": turn * self.cfg.years_per_turn,
+                "type": "clan_extinct",
+                "tribe": clan,
+                "origin": lifecycle["origin"],
+                "total_deaths": self.cumulative_deaths_by_clan.get(clan, 0),
+            })
+        return events_out
 
     def travel_cost(self, origin: int, destination: int) -> float:
         if destination in self.path_neighbors[origin]:
@@ -115,6 +245,198 @@ class Island:
         return float(np.dot(
             adults, np.asarray(self.cfg.traits.genes.migration_drive, dtype=float)) / total)
 
+    def _blue_share_from_stage_counts(self, counts: np.ndarray) -> float:
+        total = int(np.asarray(counts, dtype=np.int64).sum())
+        if total == 0:
+            return 0.0
+        return float(np.asarray(counts, dtype=np.int64)[..., 2].sum() / total)
+
+    def _valley_blue_share(self, valley: Valley) -> float:
+        total = valley.population
+        if total <= 0:
+            return 0.0
+        return float(sum(int(counts[:, :, 2].sum()) for counts in valley.cohorts.values()) / total)
+
+    def _weighted_culture_signal(self, valley: Valley, attribute: str) -> float:
+        if valley.population <= 0:
+            return 0.0
+        return sum(
+            int(counts.sum()) * getattr(self.cfg.traits.culture(clan), attribute)
+            for clan, counts in valley.cohorts.items()
+        ) / valley.population
+
+    def _arrival_cohesion_bonus(self, valley: Valley) -> float:
+        if valley.population <= 0:
+            return 0.0
+        bonus = 0.0
+        for clan, counts in valley.cohorts.items():
+            arrival = self.arrival_by_clan.get(clan)
+            if arrival is None:
+                continue
+            bonus += arrival.cohesion_bonus * int(counts.sum()) / valley.population
+        return bonus
+
+    def _cross_clan_openness(self, first_clan: str, first_counts: np.ndarray,
+                             second_clan: str, second_counts: np.ndarray) -> float:
+        first_culture = self.cfg.traits.culture(first_clan)
+        second_culture = self.cfg.traits.culture(second_clan)
+        phenotype_gap = abs(
+            self._blue_share_from_stage_counts(first_counts)
+            - self._blue_share_from_stage_counts(second_counts)
+        )
+        xenophile = 0.5 * (first_culture.xenophile + second_culture.xenophile)
+        xenophobic = 0.5 * (first_culture.xenophobic + second_culture.xenophobic)
+        return max(0.15, 1.0 + 1.2 * xenophile * phenotype_gap - 1.4 * xenophobic * phenotype_gap)
+
+    def _refugee_destination(self, origin: int,
+                             displaced_by_clan: Dict[str, np.ndarray]) -> Optional[int]:
+        options = [index for index in range(self.n) if index != origin]
+        weights = []
+        for destination in options:
+            valley = self.valleys[destination]
+            outlook = 0.2 + valley.food_security + valley.food_stock / max(valley.storage_limit, 1.0)
+            receiving_xenophile = self._weighted_culture_signal(valley, "xenophile")
+            receiving_xenophobic = self._weighted_culture_signal(valley, "xenophobic")
+            receiving_nurturing = self._weighted_culture_signal(valley, "nurturing")
+            receiving_harsh = self._weighted_culture_signal(valley, "harsh_discipline")
+            valley_blue_share = self._valley_blue_share(valley)
+            refugee_total = 0
+            same_clan_anchor = 0.0
+            phenotype_gap = 0.0
+            for clan, displaced in displaced_by_clan.items():
+                clan_total = int(displaced.sum())
+                if clan_total == 0:
+                    continue
+                refugee_total += clan_total
+                same_clan_anchor += clan_total * (
+                    int(valley.cohorts.get(clan, np.zeros(SHAPE, dtype=np.int64)).sum())
+                    / max(valley.population, 1)
+                )
+                phenotype_gap += clan_total * abs(
+                    self._blue_share_from_stage_counts(displaced) - valley_blue_share
+                )
+            if refugee_total == 0:
+                weights.append(0.0)
+                continue
+            phenotype_gap /= refugee_total
+            same_clan_anchor /= refugee_total
+            acceptance = (
+                1.0
+                + 0.75 * same_clan_anchor
+                + 1.10 * receiving_xenophile * phenotype_gap
+                - 1.30 * receiving_xenophobic * phenotype_gap
+                + 0.15 * receiving_nurturing
+                - 0.12 * receiving_harsh
+            )
+            weights.append(max(0.05, outlook * acceptance / self.travel_cost(origin, destination)))
+        total = sum(weights)
+        if total <= 0:
+            return None
+        return int(self.rng.choice(options, p=np.asarray(weights) / total))
+
+    def _arrivals(self, turn: int) -> List[dict]:
+        events_out = []
+        for arrival in self.arrival_schedule.get(turn, []):
+            valley_index = self._find_valley_index(arrival.valley)
+            valley = self.valleys[valley_index]
+            age_counts = demography.initial_age_counts(
+                (arrival.init_BB, arrival.init_Bb, arrival.init_bb),
+                self.cfg.demography,
+                self.rng,
+            )
+            cohorts = np.zeros(SHAPE, dtype=np.int64)
+            cohorts[NEWCOMER] = age_counts
+            valley.ensure_tribe(arrival.clan)[:] += cohorts
+            self.cfg.traits.clans[arrival.clan] = arrival.traits
+            departure_turn = turn + int(self.rng.integers(
+                arrival.dwell_min_turns, arrival.dwell_max_turns + 1
+            ))
+            self.active_arrivals[arrival.clan] = {
+                "departure_turn": departure_turn,
+                "arrival_turn": turn,
+                "arrival_valley": arrival.valley,
+            }
+            self._register_clan(arrival.clan, turn, "arrival", valley=arrival.valley)
+            events_out.append({
+                "turn": turn,
+                "year": turn * self.cfg.years_per_turn,
+                "type": "clan_arrival",
+                "tribe": arrival.clan,
+                "valley": arrival.valley,
+                "count": arrival.population,
+                "departure_turn": departure_turn,
+                "departure_year": departure_turn * self.cfg.years_per_turn,
+            })
+        return events_out
+
+    def _move_or_depart_arrivals(self, turn: int) -> List[dict]:
+        events_out = []
+        for clan, state in list(self.active_arrivals.items()):
+            valley_counts = []
+            total_counts = np.zeros(SHAPE, dtype=np.int64)
+            for index, valley in enumerate(self.valleys):
+                counts = valley.cohorts.get(clan)
+                if counts is None or int(counts.sum()) == 0:
+                    continue
+                valley_counts.append((index, counts.copy()))
+                total_counts += counts
+            total_population = int(total_counts.sum())
+            if total_population == 0:
+                self.active_arrivals.pop(clan, None)
+                continue
+            if turn >= state["departure_turn"]:
+                removed_total = 0
+                for index, counts in valley_counts:
+                    departing = self.rng.binomial(
+                        counts,
+                        self.arrival_by_clan[clan].departure_fraction,
+                    ).astype(np.int64)
+                    self.valleys[index].cohorts[clan] -= departing
+                    removed_total += int(departing.sum())
+                    self.valleys[index].clean_empty_tribes()
+                self.active_arrivals.pop(clan, None)
+                events_out.append({
+                    "turn": turn,
+                    "year": turn * self.cfg.years_per_turn,
+                    "type": "clan_departure",
+                    "tribe": clan,
+                    "count": removed_total,
+                })
+                continue
+
+            dominant_index, dominant_counts = max(
+                valley_counts, key=lambda item: int(item[1].sum())
+            )
+            origin_valley = self.valleys[dominant_index]
+            arrival = self.arrival_by_clan[clan]
+            should_move = len(valley_counts) > 1
+            should_move = should_move or origin_valley.land_health <= arrival.mass_move_land_threshold
+            should_move = should_move or self.rng.random() < arrival.mass_move_chance
+            if not should_move:
+                continue
+            destination = self._destination(dominant_index, clan, total_counts)
+            if destination is None:
+                continue
+            moved_counts = np.zeros(SHAPE, dtype=np.int64)
+            for index, counts in valley_counts:
+                moved_counts += counts
+                self.valleys[index].cohorts.pop(clan, None)
+                self.valleys[index].clean_empty_tribes()
+            arriving = np.zeros(SHAPE, dtype=np.int64)
+            arriving[NEWCOMER] = moved_counts.sum(axis=0)
+            self.valleys[destination].ensure_tribe(clan)[:] += arriving
+            events_out.append({
+                "turn": turn,
+                "year": turn * self.cfg.years_per_turn,
+                "type": "clan_expedition",
+                "tribe": clan,
+                "from": origin_valley.name,
+                "to": self.valleys[destination].name,
+                "count": int(moved_counts.sum()),
+                "route": "path" if destination in self.path_neighbors[dominant_index] else "canoe",
+            })
+        return events_out
+
     def _erupt(self, turn: int) -> List[dict]:
         for valley in self.valleys:
             valley.erupted_this_turn = False
@@ -123,6 +445,7 @@ class Island:
             return []
         index = (turn // interval) % self.n
         valley = self.valleys[index]
+        before_by_clan = {clan: counts.copy() for clan, counts in valley.cohorts.items()}
         cfg = self.cfg.volcano
         mortality = self.rng.uniform(cfg.immediate_mortality_min, cfg.immediate_mortality_max)
         before = valley.population
@@ -143,6 +466,7 @@ class Island:
         valley.erupted_this_turn = True
         valley.ash_bonus_turns = cfg.ash_bonus_turns
         valley.shock_memory = min(1.0, valley.shock_memory + 0.70)
+        self._record_deaths("eruption", self._diff_counts(before_by_clan, valley.cohorts))
         return [{
             "turn": turn,
             "year": turn * self.cfg.years_per_turn,
@@ -162,13 +486,18 @@ class Island:
                     valley, self.cfg.traits.genes.ash_farming))
             stationary_share = 0.0
             migratory_share = 0.0
+            harsh_share = 0.0
+            nurturing_share = 0.0
             total_people = max(valley.population, 1)
             for clan, counts in valley.cohorts.items():
                 share = counts.sum() / total_people
                 culture = self.cfg.traits.culture(clan)
                 stationary_share += share * culture.stationary
                 migratory_share += share * culture.migratory
+                harsh_share += share * culture.harsh_discipline
+                nurturing_share += share * culture.nurturing
             effective_land *= 1.0 + 0.15 * stationary_share - 0.08 * migratory_share
+            effective_land *= 1.0 + 0.06 * harsh_share - 0.03 * nurturing_share
             if valley.ash_bonus_turns > 0:
                 effective_land *= 1.0 + self.cfg.volcano.ash_bonus
             food = resources.update_food(
@@ -187,16 +516,62 @@ class Island:
             )
             baseline_deaths = 0
             shortage_deaths = 0
+            extractive_land_loss = 0.0
+            baseline_dead_by_clan: Dict[str, np.ndarray] = {}
+            shortage_dead_by_clan: Dict[str, np.ndarray] = {}
             for tribe, counts in valley.cohorts.items():
                 transitioned = np.zeros_like(counts)
+                baseline_dead = np.zeros((3, 3), dtype=np.int64)
+                shortage_dead = np.zeros((3, 3), dtype=np.int64)
+                culture = self.cfg.traits.culture(tribe)
+                arrival = self.arrival_by_clan.get(tribe)
+                protected_security = valley.food_security
+                if arrival is not None and valley.food_stock > 0:
+                    protected_security = max(protected_security, arrival.food_security_floor)
+                adjusted_demography = replace(
+                    self.cfg.demography,
+                    child_survival=float(np.clip(
+                        self.cfg.demography.child_survival
+                        + 0.03 * culture.nurturing
+                        - 0.04 * culture.harsh_discipline,
+                        0.0,
+                        1.0,
+                    )),
+                    adult_survival=float(np.clip(
+                        self.cfg.demography.adult_survival
+                        + 0.01 * culture.harsh_discipline,
+                        0.0,
+                        1.0,
+                    )),
+                )
                 for residency in (NEWCOMER, ESTABLISHED):
                     result = demography.transition_cohorts(
-                        counts[residency], valley.food_security, self.cfg.demography, self.rng)
+                        counts[residency], protected_security, adjusted_demography, self.rng)
                     transitioned[residency] = result.counts
                     baseline_deaths += result.baseline_deaths
                     shortage_deaths += result.shortage_deaths
+                    baseline_dead += result.baseline_death_counts
+                    shortage_dead += result.shortage_death_counts
                 valley.cohorts[tribe] = transitioned
+                if arrival is not None and valley.population > 0:
+                    extractive_land_loss += arrival.land_drain_per_turn * min(
+                        1.0,
+                        int(transitioned.sum()) / max(valley.population, 1),
+                    )
+                if int(baseline_dead.sum()) > 0:
+                    baseline_dead_by_clan[tribe] = baseline_dead
+                if int(shortage_dead.sum()) > 0:
+                    shortage_dead_by_clan[tribe] = shortage_dead
             valley.clean_empty_tribes()
+            if extractive_land_loss > 0:
+                valley.land_health *= max(0.0, 1.0 - extractive_land_loss)
+            baseline_stage_totals = np.zeros(3, dtype=np.int64)
+            self._record_deaths("baseline", baseline_dead_by_clan)
+            self._record_deaths("shortage", shortage_dead_by_clan)
+            for dead_counts in baseline_dead_by_clan.values():
+                baseline_stage_totals += np.asarray(dead_counts, dtype=np.int64).sum(axis=1)
+            for stage, count in zip(demography.LIFE_STAGES, baseline_stage_totals):
+                self.cumulative_baseline_deaths_by_stage[stage] += int(count)
             ledgers.append({
                 "valley": valley.name,
                 "food_produced": food.produced,
@@ -204,19 +579,38 @@ class Island:
                 "food_consumed": food.consumed,
                 "food_unmet": food.unmet,
                 "baseline_deaths": baseline_deaths,
+                "baseline_child_deaths": int(baseline_stage_totals[demography.CHILD]),
+                "baseline_adult_deaths": int(baseline_stage_totals[demography.ADULT]),
+                "baseline_elder_deaths": int(baseline_stage_totals[demography.ELDER]),
                 "shortage_deaths": shortage_deaths,
+                "extractive_land_loss": extractive_land_loss,
             })
         return ledgers
 
-    def _destination(self, origin: int, clan: Optional[str] = None) -> Optional[int]:
+    def _destination(self, origin: int, clan: Optional[str] = None,
+                     clan_counts: Optional[np.ndarray] = None) -> Optional[int]:
         options = [index for index in range(self.n) if index != origin]
         weights = []
         for destination in options:
             valley = self.valleys[destination]
             outlook = 0.2 + valley.food_security + valley.food_stock / max(valley.storage_limit, 1.0)
-            if clan is not None and clan in valley.cohorts:
-                clan_share = int(valley.cohorts[clan].sum()) / max(valley.population, 1)
-                outlook *= 1.0 + self.cfg.migration.clan_destination_pull * clan_share
+            if clan is not None:
+                culture = self.cfg.traits.culture(clan)
+                if clan in valley.cohorts:
+                    clan_share = int(valley.cohorts[clan].sum()) / max(valley.population, 1)
+                    outlook *= 1.0 + self.cfg.migration.clan_destination_pull * clan_share * (
+                        1.0 + culture.xenophobic - 0.4 * culture.xenophile
+                    )
+                if clan_counts is not None:
+                    phenotype_gap = abs(
+                        self._blue_share_from_stage_counts(clan_counts)
+                        - self._valley_blue_share(valley)
+                    )
+                    outlook *= max(
+                        0.2,
+                        1.0 + 0.9 * culture.xenophile * phenotype_gap
+                        - 1.1 * culture.xenophobic * phenotype_gap,
+                    )
             weights.append(outlook / self.travel_cost(origin, destination))
         total = sum(weights)
         if total <= 0:
@@ -245,7 +639,8 @@ class Island:
             household_count = int(self.rng.poisson(expected_households))
             for _ in range(household_count):
                 tribe_names = [name for name, counts in available_by_tribe.items()
-                               if counts.sum() >= cfg.family_size_min]
+                               if counts.sum() >= cfg.family_size_min
+                               and name not in self.active_arrivals]
                 if not tribe_names:
                     break
                 tribe_weights = np.asarray(
@@ -272,7 +667,7 @@ class Island:
                         remaining.reshape(-1), np.ones(remaining.size),
                         family_size - int(selected.sum()), self.rng).reshape(SHAPE)
                 available_by_tribe[tribe] -= selected
-                destination = self._destination(origin, tribe)
+                destination = self._destination(origin, tribe, selected)
                 if destination is None:
                     available_by_tribe[tribe] += selected
                     continue
@@ -285,6 +680,7 @@ class Island:
                     1.0 + 0.35 * self.cfg.traits.culture(tribe).migratory)
                 if water and self.rng.random() < min(1.0, storm_chance):
                     ledger[origin]["storm_deaths"] += family_size
+                    self._record_deaths("storm", {tribe: selected})
                     events_out.append({
                         "turn": turn, "year": turn * self.cfg.years_per_turn,
                         "type": "storm", "tribe": tribe,
@@ -346,10 +742,17 @@ class Island:
                 + 0.10 * damage_pressure))
             if self.rng.random() >= probability:
                 continue
+            xenophobic_share = self._weighted_culture_signal(valley, "xenophobic")
+            xenophile_share = self._weighted_culture_signal(valley, "xenophile")
+            harsh_share = self._weighted_culture_signal(valley, "harsh_discipline")
+            nurturing_share = self._weighted_culture_signal(valley, "nurturing")
             split = conflict.partition_factions(
                 tribe_counts,
                 min(1.0, self.cfg.tribes.clan_cohesion
-                    + self.cfg.tribes.shock_cohesion_bonus * valley.shock_memory),
+                    + self.cfg.tribes.shock_cohesion_bonus * valley.shock_memory
+                    + self._arrival_cohesion_bonus(valley)
+                    + 0.18 * xenophobic_share + 0.12 * harsh_share
+                    - 0.16 * xenophile_share - 0.08 * nurturing_share),
                 self.rng)
             planned.append((index, split, probability))
 
@@ -366,13 +769,16 @@ class Island:
             losing_side = split.second if first_wins else split.first
             survivors_by_clan = {}
             displaced_by_clan = {}
+            deaths_by_clan = {}
             deaths = 0
             for clan in valley.cohorts:
                 culture = self.cfg.traits.culture(clan)
                 war_resistance = np.asarray(self.cfg.traits.genes.war_resistance)
                 resistance = war_resistance + 0.12 * culture.warlike
+                resistance += 0.10 * culture.strong_individuals
                 vulnerability = (1.0 + 0.12 * culture.strength_in_numbers
-                                 + 0.18 * culture.peaceful)
+                                 + 0.18 * culture.peaceful
+                                 - 0.10 * culture.strong_individuals)
                 winners = self.rng.binomial(
                     winning_side[clan], np.clip(
                         1.0 - cfg.winner_casualty_rate * vulnerability * (1.0 - resistance),
@@ -381,6 +787,7 @@ class Island:
                     losing_side[clan], np.clip(
                         1.0 - cfg.loser_casualty_rate * vulnerability * (1.0 - resistance),
                         0.0, 1.0)).astype(np.int64)
+                deaths_by_clan[clan] = winning_side[clan] + losing_side[clan] - winners - losers
                 deaths += int(winning_side[clan].sum() + losing_side[clan].sum()
                               - winners.sum() - losers.sum())
                 displaced_count = int(round(losers.sum() * cfg.displacement_fraction))
@@ -404,6 +811,22 @@ class Island:
                     self.cfg.traits.culture(largest_displaced_clan),
                     self.cfg.traits.culture(largest_displaced_clan),
                     self.cfg.tribes.culture_mutation_band, self.rng)
+                self._register_clan(
+                    seceded_name,
+                    turn,
+                    "split",
+                    parents=[largest_displaced_clan],
+                    valley=valley.name,
+                )
+                events_out.append({
+                    "turn": turn,
+                    "year": turn * self.cfg.years_per_turn,
+                    "type": "clan_split",
+                    "valley": valley.name,
+                    "from_clan": largest_displaced_clan,
+                    "new_clan": seceded_name,
+                    "count": largest_displaced,
+                })
 
             valley.cohorts = survivors_by_clan
             food_fraction = self.rng.uniform(cfg.food_destruction_min, cfg.food_destruction_max)
@@ -412,9 +835,10 @@ class Island:
             land_damage = self.rng.uniform(cfg.land_damage_min, cfg.land_damage_max)
             valley.land_health *= 1.0 - land_damage
             valley.shock_memory = min(1.0, valley.shock_memory + 0.35)
+            self._record_deaths("war", deaths_by_clan)
 
             refugee_count = sum(int(counts.sum()) for counts in displaced_by_clan.values())
-            destination = self._destination(index)
+            destination = self._refugee_destination(index, displaced_by_clan)
             if destination is not None and refugee_count > 0:
                 refugee_flows.append((index, destination, displaced_by_clan))
             ledger[index]["war_deaths"] += deaths
@@ -467,14 +891,25 @@ class Island:
             adults = sum(adult_by_tribe.values())
             births = demography.expected_births(
                 adults, valley.food_security, self.cfg.demography, self.rng)
+            nurturing_bonus = sum(
+                adult_by_tribe[tribe] * self.cfg.traits.culture(tribe).nurturing
+                for tribe in adult_by_tribe
+            ) / adults
+            harsh_penalty = sum(
+                adult_by_tribe[tribe] * self.cfg.traits.culture(tribe).harsh_discipline
+                for tribe in adult_by_tribe
+            ) / adults
             births = int(round(births * (
                 1.0 + self.cfg.demography.surplus_fertility_bonus
                 * valley.surplus_memory)))
+            births = int(round(births * (1.0 + 0.10 * nurturing_bonus - 0.06 * harsh_penalty)))
             if births > 0 and adults > 0:
                 tribe_names = list(adult_by_tribe)
                 strength = sum(
-                    adult_by_tribe[tribe]
-                    * self.cfg.traits.culture(tribe).strength_in_numbers
+                    adult_by_tribe[tribe] * (
+                        self.cfg.traits.culture(tribe).strength_in_numbers
+                        - 0.5 * self.cfg.traits.culture(tribe).strong_individuals
+                    )
                     for tribe in tribe_names
                 ) / adults
                 births = int(round(births * (1.0 + 0.15 * strength)))
@@ -485,6 +920,16 @@ class Island:
                 pair_weights *= 1.0 - endogamy
                 diagonal = np.diag_indices_from(pair_weights)
                 pair_weights[diagonal] += endogamy * shares
+                for first_index, first_tribe in enumerate(tribe_names):
+                    for second_index, second_tribe in enumerate(tribe_names):
+                        if first_index == second_index:
+                            continue
+                        pair_weights[first_index, second_index] *= self._cross_clan_openness(
+                            first_tribe,
+                            adult_genotypes_by_tribe[first_tribe],
+                            second_tribe,
+                            adult_genotypes_by_tribe[second_tribe],
+                        )
                 pair_probabilities = (pair_weights / pair_weights.sum()).reshape(-1)
                 pair_birth_totals = self.rng.multinomial(births, pair_probabilities).reshape(
                     len(tribe_names), len(tribe_names))
@@ -506,10 +951,20 @@ class Island:
                         cross_tribe_births += pair_births
                         parent_key = frozenset((first_tribe, second_tribe))
                         mixed_name = self.mixed_clans.get(parent_key)
+                        openness = self._cross_clan_openness(
+                            first_tribe,
+                            adult_genotypes_by_tribe[first_tribe],
+                            second_tribe,
+                            adult_genotypes_by_tribe[second_tribe],
+                        )
+                        mixed_clan_chance = min(
+                            1.0,
+                            self.cfg.tribes.mixed_clan_chance * openness,
+                        )
                         if (mixed_name is None
                             and "-" not in first_tribe
                             and "-" not in second_tribe
-                            and self.rng.random() < self.cfg.tribes.mixed_clan_chance):
+                            and self.rng.random() < mixed_clan_chance):
                             existing_names = {
                                 name for current_valley in self.valleys
                                 for name in current_valley.cohorts
@@ -521,6 +976,22 @@ class Island:
                                 self.cfg.traits.culture(first_tribe),
                                 self.cfg.traits.culture(second_tribe),
                                 self.cfg.tribes.culture_mutation_band, self.rng)
+                            self._register_clan(
+                                mixed_name,
+                                turn,
+                                "merge",
+                                parents=[first_tribe, second_tribe],
+                                valley=valley.name,
+                            )
+                            events_out.append({
+                                "turn": turn,
+                                "year": turn * self.cfg.years_per_turn,
+                                "type": "clan_merge",
+                                "valley": valley.name,
+                                "first": first_tribe,
+                                "second": second_tribe,
+                                "new_clan": mixed_name,
+                            })
                         first, second = tribes.allocate_mixed_children(
                             genotype_counts, 0.5, shares[first_index], self.cfg.tribes, self.rng)
                         if mixed_name is not None:
@@ -535,12 +1006,6 @@ class Island:
                             "first": first_tribe, "second": second_tribe,
                             "children": pair_births, "clan": mixed_name,
                         })
-                if pair_details:
-                    events_out.append({
-                        "turn": turn, "year": turn * self.cfg.years_per_turn,
-                        "type": "mixed_families", "valley": valley.name,
-                        "children": cross_tribe_births, "pairs": pair_details,
-                    })
             else:
                 cross_tribe_births = 0
             ledgers.append({"valley": valley.name, "births": births,
@@ -561,13 +1026,20 @@ class Island:
 
     def step(self, turn: int) -> None:
         starts = [valley.population for valley in self.valleys]
+        clans_before = self._island_clan_populations()
+        arrival_events = self._arrivals(turn)
         event_batch = self._erupt(turn)
         demographic_ledgers = self._food_and_demography()
         migration_events, migration_ledgers = self._migrate(turn)
         conflict_events, conflict_ledgers = self._conflicts(turn)
         birth_events, birth_ledgers = self._births(turn)
+        expedition_events = self._move_or_depart_arrivals(turn)
         self._advance_residency_and_land()
-        self.event_log.extend(event_batch + migration_events + conflict_events + birth_events)
+        lifecycle_events = self._record_clan_extinctions(clans_before, turn)
+        self.event_log.extend(
+            arrival_events + event_batch + migration_events + conflict_events + birth_events
+            + expedition_events + lifecycle_events
+        )
         ledgers = []
         for index, valley in enumerate(self.valleys):
             ledgers.append({
@@ -584,11 +1056,22 @@ class Island:
         self.history.append(self._snapshot(turn, ledgers))
 
     def _snapshot(self, turn: int, ledgers: Optional[List[dict]] = None) -> dict:
+        island_population = sum(valley.population for valley in self.valleys)
         valleys = []
+        population_by_clan: Dict[str, int] = {}
+        bb_population_by_clan: Dict[str, int] = {}
+        bb_count_by_clan: Dict[str, int] = {}
         for valley in self.valleys:
             q = valley.q
             clan_populations = {name: int(counts.sum())
                                 for name, counts in valley.cohorts.items()}
+            clan_bb_counts = {name: int(counts[:, :, 2].sum())
+                              for name, counts in valley.cohorts.items()}
+            for name, population in clan_populations.items():
+                population_by_clan[name] = population_by_clan.get(name, 0) + population
+                bb_count = clan_bb_counts.get(name, 0)
+                bb_population_by_clan[name] = bb_population_by_clan.get(name, 0) + bb_count
+                bb_count_by_clan[name] = bb_count_by_clan.get(name, 0) + bb_count
             trait_populations = {
                 trait: {
                     "positive": sum(
@@ -608,7 +1091,8 @@ class Island:
                     ),
                 }
                 for trait in ("warlike", "peaceful", "strength_in_numbers",
-                              "migratory", "stationary")
+                              "strong_individuals", "xenophile", "xenophobic",
+                              "harsh_discipline", "nurturing", "migratory", "stationary")
             }
             valleys.append({
                 "name": valley.name,
@@ -630,6 +1114,7 @@ class Island:
                 "surplus_memory": valley.surplus_memory,
                 "eruption": valley.erupted_this_turn,
                 "tribes": clan_populations,
+                "clan_bb_counts": clan_bb_counts,
                 "clan_traits": {
                     clan: asdict(self.cfg.traits.culture(clan))
                     for clan in clan_populations
@@ -641,12 +1126,30 @@ class Island:
             "year": turn * self.cfg.years_per_turn,
             "valleys": valleys,
             "ledger": ledgers or [],
+            "totals": {
+                "population": island_population,
+                "deaths_by_source": dict(self.cumulative_deaths_by_source),
+                "baseline_deaths_by_stage": dict(self.cumulative_baseline_deaths_by_stage),
+                "deaths_by_genotype": dict(self.cumulative_deaths_by_genotype),
+                "deaths_by_clan": dict(self.cumulative_deaths_by_clan),
+                "population_by_clan": population_by_clan,
+                "bb_population_by_clan": bb_population_by_clan,
+                "bb_share_by_clan": {
+                    clan: (bb_count_by_clan[clan] / population_by_clan[clan])
+                    for clan in population_by_clan
+                    if population_by_clan[clan] > 0
+                },
+                "clan_lifecycles": {
+                    clan: dict(details)
+                    for clan, details in self.clan_lifecycles.items()
+                },
+            },
         }
 
     def run(self, turns: Optional[int] = None) -> List[dict]:
         total_turns = self.cfg.turns if turns is None else turns
+        self._reset_tracking()
         self.history = [self._snapshot(0)]
-        self.event_log = []
         for turn in range(1, total_turns + 1):
             self.step(turn)
         return self.history

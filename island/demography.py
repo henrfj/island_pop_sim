@@ -14,6 +14,8 @@ class CohortTransition:
     counts: np.ndarray
     baseline_deaths: int
     shortage_deaths: int
+    baseline_death_counts: np.ndarray
+    shortage_death_counts: np.ndarray
 
 
 def initial_age_counts(genotypes: Tuple[int, int, int], cfg: DemographyConfig,
@@ -34,6 +36,7 @@ def transition_cohorts(counts: np.ndarray, food_security: float, cfg: Demography
         raise ValueError("cohort counts must have shape (life_stage=3, genotype=3)")
     survival = np.array([cfg.child_survival, cfg.adult_survival, cfg.elder_survival])[:, None]
     baseline_survivors = rng.binomial(counts, survival)
+    baseline_death_counts = counts - baseline_survivors
     baseline_deaths = int(counts.sum() - baseline_survivors.sum())
     onset = cfg.shortage_mortality_onset
     shortage = max(0.0, onset - food_security) / max(onset, 1e-9)
@@ -43,6 +46,7 @@ def transition_cohorts(counts: np.ndarray, food_security: float, cfg: Demography
         cfg.shortage_mortality_elder,
     ])[:, None]
     survivors = rng.binomial(baseline_survivors, 1.0 - shortage_rates)
+    shortage_death_counts = baseline_survivors - survivors
     shortage_deaths = int(baseline_survivors.sum() - survivors.sum())
     aged_children = rng.binomial(survivors[CHILD], cfg.child_aging_fraction)
     aged_adults = rng.binomial(survivors[ADULT], cfg.adult_aging_fraction)
@@ -50,7 +54,13 @@ def transition_cohorts(counts: np.ndarray, food_security: float, cfg: Demography
     transitioned[CHILD] -= aged_children
     transitioned[ADULT] += aged_children - aged_adults
     transitioned[ELDER] += aged_adults
-    return CohortTransition(transitioned, baseline_deaths, shortage_deaths)
+    return CohortTransition(
+        transitioned,
+        baseline_deaths,
+        shortage_deaths,
+        baseline_death_counts,
+        shortage_death_counts,
+    )
 
 
 def expected_births(adult_population: int, food_security: float, cfg: DemographyConfig,

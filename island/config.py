@@ -93,22 +93,88 @@ class CultureTraits:
     warlike: float = 0.0
     peaceful: float = 0.0
     strength_in_numbers: float = 0.0
+    strong_individuals: float = 0.0
+    xenophile: float = 0.0
+    xenophobic: float = 0.0
+    harsh_discipline: float = 0.0
+    nurturing: float = 0.0
     migratory: float = 0.0
     stationary: float = 0.0
+
+    def __post_init__(self) -> None:
+        normalized = {
+            "warlike": max(0.0, self.warlike),
+            "peaceful": max(0.0, self.peaceful),
+            "strength_in_numbers": max(0.0, self.strength_in_numbers),
+            "strong_individuals": max(0.0, self.strong_individuals),
+            "xenophile": max(0.0, self.xenophile),
+            "xenophobic": max(0.0, self.xenophobic),
+            "harsh_discipline": max(0.0, self.harsh_discipline),
+            "nurturing": max(0.0, self.nurturing),
+            "migratory": max(0.0, self.migratory),
+            "stationary": max(0.0, self.stationary),
+        }
+        for positive, opposite in (
+            ("warlike", "peaceful"),
+            ("strength_in_numbers", "strong_individuals"),
+            ("xenophile", "xenophobic"),
+            ("harsh_discipline", "nurturing"),
+            ("migratory", "stationary"),
+        ):
+            overlap = min(normalized[positive], normalized[opposite])
+            normalized[positive] -= overlap
+            normalized[opposite] -= overlap
+        for name, value in normalized.items():
+            object.__setattr__(self, name, float(value))
+
+
+@dataclass(frozen=True)
+class ArrivalEventConfig:
+    turn: int = 400
+    valley: str = "Landfall"
+    clan: str = "Blackwake"
+    init_BB: int = 0
+    init_Bb: int = 0
+    init_bb: int = 220
+    traits: CultureTraits = field(default_factory=lambda: CultureTraits(
+        warlike=0.28,
+        strong_individuals=0.24,
+        xenophobic=0.55,
+        harsh_discipline=0.14,
+        migratory=0.22,
+    ))
+    dwell_min_turns: int = 10
+    dwell_max_turns: int = 50
+    land_drain_per_turn: float = 0.04
+    food_security_floor: float = 0.72
+    departure_fraction: float = 0.97
+    mass_move_chance: float = 0.38
+    mass_move_land_threshold: float = 0.78
+    cohesion_bonus: float = 0.45
+
+    @property
+    def population(self) -> int:
+        return self.init_BB + self.init_Bb + self.init_bb
 
 
 @dataclass
 class TraitConfig:
     genes: GeneTraits = field(default_factory=GeneTraits)
     clans: Dict[str, CultureTraits] = field(default_factory=lambda: {
-        "Tideborn": CultureTraits(migratory=0.10),
+        "Tideborn": CultureTraits(migratory=0.10, xenophile=0.10),
         "Cloudfolk": CultureTraits(stationary=0.10),
-        "Reedkin": CultureTraits(peaceful=0.10),
-        "Ashclan": CultureTraits(warlike=0.10),
+        "Reedkin": CultureTraits(peaceful=0.10, nurturing=0.10),
+        "Ashclan": CultureTraits(warlike=0.10, harsh_discipline=0.10),
     })
 
     def culture(self, clan: str) -> CultureTraits:
         return self.clans.get(clan, CultureTraits())
+
+    def __post_init__(self) -> None:
+        self.clans = {
+            clan: traits if isinstance(traits, CultureTraits) else CultureTraits(**traits)
+            for clan, traits in self.clans.items()
+        }
 
 
 @dataclass
@@ -145,7 +211,7 @@ class ConflictConfig:
 
 @dataclass
 class SimulationConfig:
-    turns: int = 8000
+    turns: int = 800
     years_per_turn: int = 5
     seed: int = 20260923
     demography: DemographyConfig = field(default_factory=DemographyConfig)
@@ -155,6 +221,7 @@ class SimulationConfig:
     traits: TraitConfig = field(default_factory=TraitConfig)
     volcano: VolcanoConfig = field(default_factory=VolcanoConfig)
     conflict: ConflictConfig = field(default_factory=ConflictConfig)
+    arrivals: tuple[ArrivalEventConfig, ...] = field(default_factory=lambda: (ArrivalEventConfig(),))
 
     def validate(self) -> None:
         if self.turns < 0 or self.years_per_turn <= 0:
@@ -188,6 +255,25 @@ class SimulationConfig:
             raise ValueError("fertility_full_security must be positive")
         if self.tribes.culture_mutation_band < 0:
             raise ValueError("culture_mutation_band must be nonnegative")
+        for arrival in self.arrivals:
+            if arrival.turn < 0:
+                raise ValueError("arrival turn must be nonnegative")
+            if arrival.population <= 0:
+                raise ValueError("arrival population must be positive")
+            if arrival.dwell_min_turns <= 0 or arrival.dwell_max_turns < arrival.dwell_min_turns:
+                raise ValueError("arrival dwell range is invalid")
+            if not 0.0 <= arrival.land_drain_per_turn <= 1.0:
+                raise ValueError("arrival land_drain_per_turn must be between 0 and 1")
+            if not 0.0 <= arrival.food_security_floor <= 1.5:
+                raise ValueError("arrival food_security_floor must be between 0 and 1.5")
+            if not 0.0 <= arrival.departure_fraction <= 1.0:
+                raise ValueError("arrival departure_fraction must be between 0 and 1")
+            if not 0.0 <= arrival.mass_move_chance <= 1.0:
+                raise ValueError("arrival mass_move_chance must be between 0 and 1")
+            if not 0.0 <= arrival.mass_move_land_threshold <= 1.0:
+                raise ValueError("arrival mass_move_land_threshold must be between 0 and 1")
+            if arrival.cohesion_bonus < 0:
+                raise ValueError("arrival cohesion_bonus must be nonnegative")
 
 
 def default_valleys() -> List[ValleySpec]:
@@ -204,6 +290,17 @@ def default_valleys() -> List[ValleySpec]:
 def main_volcanic_scenario() -> tuple[SimulationConfig, List[ValleySpec]]:
     """Recovering Landfall and an eruption every 20 years around the ring."""
     return SimulationConfig(), default_valleys()
+
+
+def tideborn_defensive_scenario() -> tuple[SimulationConfig, List[ValleySpec]]:
+    """Test whether a stationary, cohesive, xenophobic Tideborn can hold Landfall."""
+    config = SimulationConfig()
+    config.traits.clans["Tideborn"] = CultureTraits(
+        strength_in_numbers=0.25,
+        xenophobic=1,
+        stationary=1,
+    )
+    return config, default_valleys()
 
 
 def slow_volcanic_scenario() -> tuple[SimulationConfig, List[ValleySpec]]:

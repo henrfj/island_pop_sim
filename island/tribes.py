@@ -4,6 +4,24 @@ import numpy as np
 from .config import CultureTraits, TribeConfig
 
 
+TRAIT_WORDS = {
+    "warlike": ("Spear", "Ember", "Fang"),
+    "peaceful": ("Harbor", "Calm", "Dawn"),
+    "strength_in_numbers": ("Host", "Many", "Union"),
+    "strong_individuals": ("Free", "Bold", "Rift"),
+    "xenophile": ("Open", "Bridge", "Welcome"),
+    "xenophobic": ("Ward", "Gate", "Bound"),
+    "syncretic": ("Braided", "Blend", "Mosaic"),
+    "insular": ("Keep", "Holdfast", "Closed"),
+    "harsh_discipline": ("Law", "Order", "Chain"),
+    "nurturing": ("Kin", "Nest", "Bloom"),
+    "agrarian": ("Field", "Harvest", "Loam"),
+    "hunter_gatherer": ("Trail", "Forage", "Reed"),
+    "migratory": ("Drift", "Wake", "Roam"),
+    "stationary": ("Hearth", "Stone", "Root"),
+}
+
+
 def allocate_mixed_children(birth_counts: np.ndarray, first_parent_weight: float,
                             local_first_share: float, cfg: TribeConfig,
                             rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
@@ -27,9 +45,40 @@ def unique_branch_name(parent: str, existing: set[str], cfg: TribeConfig) -> str
     return f"{root} {index}"
 
 
-def unique_mixed_name(first: str, second: str, existing: set[str]) -> str:
-    roots = sorted({first.split(" ", 1)[0], second.split(" ", 1)[0]})
-    root = "-".join(roots)
+def _lineage_roots(name: str) -> list[str]:
+    roots = []
+    for part in name.split(" ", 1)[0].split("-"):
+        if part and part not in roots:
+            roots.append(part)
+    return roots
+
+
+def _compact_root_label(root: str) -> str:
+    root = root.strip()
+    lowered = root.lower()
+    if lowered.endswith("folk"):
+        root = root[:-4]
+    elif lowered.endswith("born"):
+        root = root[:-4]
+    elif lowered.endswith("clan"):
+        root = root[:-4]
+    elif lowered.endswith("kin"):
+        root = root[:-3]
+    return root or "Clan"
+
+
+def _trait_word(culture: CultureTraits, rng: np.random.Generator) -> str:
+    ranked = sorted(culture.__dict__.items(), key=lambda item: (-item[1], item[0]))
+    top_trait, top_value = ranked[0]
+    if top_value <= 0:
+        return "New"
+    return str(rng.choice(TRAIT_WORDS.get(top_trait, ("New",))))
+
+
+def unique_mixed_name(first: str, second: str, dominant_parent: str,
+                      culture: CultureTraits, existing: set[str],
+                      rng: np.random.Generator) -> str:
+    root = f"{_trait_word(culture, rng)} {_compact_root_label(dominant_parent)}"
     candidate = root
     index = 2
     while candidate in existing:

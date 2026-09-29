@@ -6,7 +6,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from .config import (ArrivalEventConfig, SimulationConfig, ValleySpec,
-                     main_volcanic_scenario, neutral_control_scenario,
+                     civil_war_scenario, main_volcanic_scenario, neutral_control_scenario,
                      slow_volcanic_scenario, tideborn_defensive_scenario)
 from .viz.export_html import export_history_html
 from .world import Island
@@ -17,6 +17,7 @@ SCENARIOS: dict[str, Callable[[], tuple[SimulationConfig, list[ValleySpec]]]] = 
     "slow-volcanic": slow_volcanic_scenario,
     "neutral-control": neutral_control_scenario,
     "tideborn-defensive": tideborn_defensive_scenario,
+    "civil-war": civil_war_scenario,
 }
 
 
@@ -101,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="main",
                         help="Named scenario to run.")
     parser.add_argument("--blackwake", choices=("auto", "on", "off"), default="auto",
-                        help="Control the late Blackwake arrival: keep scenario default, force on, or force off.")
+                        help="Control the experimental late Blackwake arrival: keep scenario default, force on, or force off.")
     return parser.parse_args()
 
 

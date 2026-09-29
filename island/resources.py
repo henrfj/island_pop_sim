@@ -16,11 +16,13 @@ class FoodResult:
 
 
 def update_food(stock: float, storage_limit: float, land_yield: float, land_health: float,
-                adults: int, children: int, elders: int, cfg: FoodConfig) -> FoodResult:
+                adults: int, children: int, elders: int, cfg: FoodConfig,
+                spoilage_fraction: float | None = None) -> FoodResult:
     labor_factor = 1.0 - math.exp(-max(0, adults) / cfg.labor_saturation)
     produced = max(0.0, land_yield * land_health * labor_factor * cfg.adult_labor_productivity)
     available = max(0.0, stock) + produced
-    biological_spoilage = available * cfg.spoilage_fraction
+    effective_spoilage = cfg.spoilage_fraction if spoilage_fraction is None else spoilage_fraction
+    biological_spoilage = available * effective_spoilage
     after_spoilage = available - biological_spoilage
     overflow = max(0.0, after_spoilage - max(0.0, storage_limit))
     spoiled = biological_spoilage + overflow

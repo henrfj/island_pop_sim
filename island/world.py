@@ -18,6 +18,7 @@ class Valley:
     land_yield: float
     storage_limit: float
     food_stock: float
+    spoilage_rate: float = 1.0
     cohorts: Dict[str, np.ndarray] = field(default_factory=dict)
     land_health: float = 1.0
     food_security: float = 1.0
@@ -75,12 +76,18 @@ class Island:
             cohorts[ESTABLISHED] = age_counts
             self.valleys.append(Valley(
                 spec.name, spec.tribe, spec.land_yield, spec.storage_limit,
-                spec.initial_food, {spec.tribe: cohorts},
+                spec.initial_food, spec.spoilage_rate, {spec.tribe: cohorts},
                 land_health=spec.initial_land_health,
                 ash_bonus_turns=spec.initial_ash_bonus_turns,
             ))
         self.n = len(self.valleys)
         self.founding_clans = tuple(dict.fromkeys(spec.tribe for spec in valley_specs))
+        if self.cfg.traits.randomize_founders:
+            for clan in self.founding_clans:
+                if clan in self.cfg.traits.locked_founders:
+                    continue
+                self.cfg.traits.clans[clan] = self.cfg.traits.randomized_founder_culture(
+                    clan, self.rng)
         self.path_neighbors = {i: {(i - 1) % self.n, (i + 1) % self.n} for i in range(self.n)}
         self.mixed_clans: Dict[frozenset[str], str] = {}
         self.arrival_schedule: Dict[int, List[ArrivalEventConfig]] = {}
@@ -97,6 +104,12 @@ class Island:
         self.history = []
         self.event_log = []
         self.mixed_clans = {}
+        self._culture_similarity_cache: Dict[frozenset[str], float] = {}
+        self._migration_destination_cache: Optional[
+            Dict[tuple[int, str], tuple[float, float, float, int]]
+        ] = None
+        self._migration_valley_blue_shares: Optional[List[float]] = None
+        self._civil_war_triggered = False
         self.cumulative_deaths_by_source = {
             "eruption": 0,
             "baseline": 0,
@@ -226,24 +239,21 @@ class Island:
         valley.clean_empty_tribes()
         return before - valley.population
 
-    def _weighted_gene_effect(self, valley: Valley, effect: tuple[float, float, float]) -> float:
-        adults = sum(
-            (counts[:, demography.ADULT, :].sum(axis=0)
-             for counts in valley.cohorts.values()),
-            np.zeros(3, dtype=np.int64),
-        )
+    def _adult_ancestry_effect(self, counts: np.ndarray,
+                               effect: tuple[float, float, float]) -> float:
+        adults = counts[:, demography.ADULT, :].sum(axis=0)
         total = int(adults.sum())
         if total == 0:
             return 0.0
         return float(np.dot(adults, np.asarray(effect, dtype=float)) / total)
 
-    def _genotype_migration_drive(self, counts: np.ndarray) -> float:
-        adults = counts[:, demography.ADULT, :].sum(axis=0)
-        total = int(adults.sum())
+    def _population_ancestry_effect(self, counts: np.ndarray,
+                                    effect: tuple[float, float, float]) -> float:
+        totals = self._genotype_totals(counts)
+        total = int(totals.sum())
         if total == 0:
             return 0.0
-        return float(np.dot(
-            adults, np.asarray(self.cfg.traits.genes.migration_drive, dtype=float)) / total)
+        return float(np.dot(totals, np.asarray(effect, dtype=float)) / total)
 
     def _blue_share_from_stage_counts(self, counts: np.ndarray) -> float:
         total = int(np.asarray(counts, dtype=np.int64).sum())
@@ -275,6 +285,103 @@ class Island:
                 continue
             bonus += arrival.cohesion_bonus * int(counts.sum()) / valley.population
         return bonus
+
+    def _weighted_storage_profile(self, valley: Valley) -> tuple[float, float]:
+        if valley.population <= 0:
+            return 0.0, 0.0
+        agrarian_share = 0.0
+        hunter_share = 0.0
+        for clan, counts in valley.cohorts.items():
+            share = int(counts.sum()) / valley.population
+            culture = self.cfg.traits.culture(clan)
+            agrarian_share += share * culture.agrarian
+            hunter_share += share * culture.hunter_gatherer
+        return agrarian_share, hunter_share
+
+    def _culture_similarity(self, first_clan: str, second_clan: str) -> float:
+        key = frozenset((first_clan, second_clan))
+        cached = self._culture_similarity_cache.get(key)
+        if cached is not None:
+            return cached
+        first = np.asarray(tuple(self.cfg.traits.culture(first_clan).__dict__.values()), dtype=float)
+        second = np.asarray(tuple(self.cfg.traits.culture(second_clan).__dict__.values()), dtype=float)
+        if first.size == 0:
+            return 0.0
+        similarity = float(np.clip(1.0 - np.abs(first - second).mean(), 0.0, 1.0))
+        self._culture_similarity_cache[key] = similarity
+        return similarity
+
+    def _valley_cultural_pull(self, clan: str, valley: Valley) -> float:
+        clan_population = valley.population
+        if clan_population <= 0:
+            return 0.0
+        total = 0.0
+        for other_clan, counts in valley.cohorts.items():
+            population = int(counts.sum())
+            if population <= 0:
+                continue
+            total += population * self._culture_similarity(clan, other_clan)
+        return total / clan_population
+
+    def _clan_cohesion_signal(self, clan: str) -> float:
+        culture = self.cfg.traits.culture(clan)
+        return float(np.clip(
+            self.cfg.tribes.clan_cohesion
+            + 0.40 * culture.strength_in_numbers
+            + 0.28 * culture.stationary
+            + 0.24 * culture.insular
+            + 0.10 * culture.harsh_discipline
+            - 0.32 * culture.strong_individuals
+            - 0.24 * culture.migratory
+            - 0.18 * culture.syncretic,
+            0.05,
+            0.95,
+        ))
+
+    def _clan_fragmentation_signal(self, clan: str) -> float:
+        culture = self.cfg.traits.culture(clan)
+        return float(np.clip(
+            0.18
+            + 0.34 * culture.strong_individuals
+            + 0.26 * culture.migratory
+            + 0.18 * culture.syncretic
+            + 0.08 * culture.peaceful
+            - 0.30 * culture.strength_in_numbers
+            - 0.22 * culture.stationary
+            - 0.16 * culture.insular,
+            0.0,
+            1.0,
+        ))
+
+    def _sample_counts(self, counts: np.ndarray, count: int) -> np.ndarray:
+        target = max(0, min(count, int(np.asarray(counts, dtype=np.int64).sum())))
+        if target <= 0:
+            return np.zeros_like(counts)
+        return sampling.weighted_sample_without_replacement_counts(
+            np.asarray(counts, dtype=np.int64).reshape(-1),
+            np.ones(np.asarray(counts).size),
+            target,
+            self.rng,
+        ).reshape(SHAPE)
+
+    def _trait_scores(self, clan_populations: Dict[str, int]) -> Dict[str, float]:
+        total = sum(clan_populations.values())
+        if total <= 0:
+            return {trait: 0.0 for trait in self.cfg.traits.culture(next(iter(self.cfg.traits.clans), "")).__dict__}
+        scores = {trait: 0.0 for trait in self.cfg.traits.culture(next(iter(self.cfg.traits.clans), "")).__dict__}
+        for clan, population in clan_populations.items():
+            culture = self.cfg.traits.culture(clan)
+            for trait, value in culture.__dict__.items():
+                scores[trait] += population * value / total
+        return scores
+
+    def _habitability_score(self, valley: Valley) -> float:
+        stock_ratio = valley.food_stock / max(valley.storage_limit, 1.0)
+        return float(np.clip(
+            0.45 * valley.food_security + 0.35 * valley.land_health + 0.20 * min(stock_ratio, 1.2),
+            0.0,
+            1.2,
+        ))
 
     def _cross_clan_openness(self, first_clan: str, first_counts: np.ndarray,
                              second_clan: str, second_counts: np.ndarray) -> float:
@@ -449,19 +556,21 @@ class Island:
         cfg = self.cfg.volcano
         mortality = self.rng.uniform(cfg.immediate_mortality_min, cfg.immediate_mortality_max)
         before = valley.population
-        fire_resistance = np.asarray(self.cfg.traits.genes.fire_resistance, dtype=float)
         for clan, counts in valley.cohorts.items():
             culture = self.cfg.traits.culture(clan)
-            vulnerability = 1.0 + 0.10 * culture.strength_in_numbers
-            survival = 1.0 - mortality * vulnerability * (1.0 - fire_resistance)
+            vulnerability = 1.0 + 0.10 * culture.strength_in_numbers - 0.08 * culture.strong_individuals
+            survival = 1.0 - mortality * np.clip(vulnerability, 0.75, 1.25)
             valley.cohorts[clan] = self.rng.binomial(
                 counts, np.clip(survival, 0.0, 1.0)).astype(np.int64)
         valley.clean_empty_tribes()
         deaths = before - valley.population
+        agrarian_share, hunter_share = self._weighted_storage_profile(valley)
         store_fraction = self.rng.uniform(cfg.store_destruction_min, cfg.store_destruction_max)
+        store_fraction *= max(0.0, 1.0 + 0.65 * agrarian_share - 1.00 * hunter_share)
         food_destroyed = valley.food_stock * store_fraction
         valley.food_stock -= food_destroyed
         land_damage = self.rng.uniform(cfg.land_damage_min, cfg.land_damage_max)
+        land_damage *= 1.0 + 0.30 * agrarian_share
         valley.land_health *= 1.0 - land_damage
         valley.erupted_this_turn = True
         valley.ash_bonus_turns = cfg.ash_bonus_turns
@@ -481,13 +590,13 @@ class Island:
         ledgers = []
         for valley in self.valleys:
             stages = valley.stage_counts
-            effective_land = valley.land_health * (
-                1.0 + self._weighted_gene_effect(
-                    valley, self.cfg.traits.genes.ash_farming))
+            effective_land = valley.land_health
             stationary_share = 0.0
             migratory_share = 0.0
             harsh_share = 0.0
             nurturing_share = 0.0
+            agrarian_share = 0.0
+            hunter_share = 0.0
             total_people = max(valley.population, 1)
             for clan, counts in valley.cohorts.items():
                 share = counts.sum() / total_people
@@ -496,14 +605,20 @@ class Island:
                 migratory_share += share * culture.migratory
                 harsh_share += share * culture.harsh_discipline
                 nurturing_share += share * culture.nurturing
+                agrarian_share += share * culture.agrarian
+                hunter_share += share * culture.hunter_gatherer
             effective_land *= 1.0 + 0.15 * stationary_share - 0.08 * migratory_share
             effective_land *= 1.0 + 0.06 * harsh_share - 0.03 * nurturing_share
             if valley.ash_bonus_turns > 0:
-                effective_land *= 1.0 + self.cfg.volcano.ash_bonus
+                effective_land *= 1.0 + self.cfg.volcano.ash_bonus * (0.30 + agrarian_share)
+            effective_spoilage = self.cfg.food.spoilage_fraction * valley.spoilage_rate
+            effective_spoilage *= max(0.25, 1.0 - 0.45 * agrarian_share)
+            effective_spoilage *= 1.0 + 0.10 * hunter_share
             food = resources.update_food(
                 valley.food_stock, valley.storage_limit, valley.land_yield, effective_land,
                 int(stages[demography.ADULT]), int(stages[demography.CHILD]),
                 int(stages[demography.ELDER]), self.cfg.food,
+                spoilage_fraction=effective_spoilage,
             )
             valley.food_stock = food.ending_stock
             valley.food_security = resources.smoothed_security(
@@ -532,6 +647,8 @@ class Island:
                     self.cfg.demography,
                     child_survival=float(np.clip(
                         self.cfg.demography.child_survival
+                        + self._population_ancestry_effect(
+                            counts, self.cfg.traits.genes.island_immunity)
                         + 0.03 * culture.nurturing
                         - 0.04 * culture.harsh_discipline,
                         0.0,
@@ -539,6 +656,8 @@ class Island:
                     )),
                     adult_survival=float(np.clip(
                         self.cfg.demography.adult_survival
+                        + 0.5 * self._population_ancestry_effect(
+                            counts, self.cfg.traits.genes.island_immunity)
                         + 0.01 * culture.harsh_discipline,
                         0.0,
                         1.0,
@@ -578,6 +697,7 @@ class Island:
                 "food_spoiled": food.spoiled,
                 "food_consumed": food.consumed,
                 "food_unmet": food.unmet,
+                "effective_spoilage": effective_spoilage,
                 "baseline_deaths": baseline_deaths,
                 "baseline_child_deaths": int(baseline_stage_totals[demography.CHILD]),
                 "baseline_adult_deaths": int(baseline_stage_totals[demography.ADULT]),
@@ -596,15 +716,39 @@ class Island:
             outlook = 0.2 + valley.food_security + valley.food_stock / max(valley.storage_limit, 1.0)
             if clan is not None:
                 culture = self.cfg.traits.culture(clan)
-                if clan in valley.cohorts:
-                    clan_share = int(valley.cohorts[clan].sum()) / max(valley.population, 1)
-                    outlook *= 1.0 + self.cfg.migration.clan_destination_pull * clan_share * (
-                        1.0 + culture.xenophobic - 0.4 * culture.xenophile
+                cache_key = (destination, clan)
+                destination_context = (
+                    self._migration_destination_cache.get(cache_key)
+                    if self._migration_destination_cache is not None else None
+                )
+                if destination_context is None:
+                    destination_population = valley.population
+                    clan_population = int(valley.cohorts[clan].sum()) if clan in valley.cohorts else 0
+                    destination_context = (
+                        self._valley_cultural_pull(clan, valley),
+                        clan_population / max(destination_population, 1),
+                        self._clan_cohesion_signal(clan),
+                        destination_population,
                     )
+                    if self._migration_destination_cache is not None:
+                        self._migration_destination_cache[cache_key] = destination_context
+                cultural_pull, clan_share, cohesion, _ = destination_context
+                if clan_share > 0:
+                    outlook *= 1.0 + self.cfg.migration.clan_destination_pull * clan_share * (
+                        0.5 + 1.3 * cohesion
+                        + 0.8 * culture.insular - 0.3 * culture.syncretic
+                    )
+                outlook *= max(0.3, 1.0 + 0.8 * culture.syncretic * cultural_pull
+                               - 0.7 * culture.insular * (1.0 - cultural_pull))
                 if clan_counts is not None:
+                    valley_blue_share = (
+                        self._migration_valley_blue_shares[destination]
+                        if self._migration_valley_blue_shares is not None
+                        else self._valley_blue_share(valley)
+                    )
                     phenotype_gap = abs(
                         self._blue_share_from_stage_counts(clan_counts)
-                        - self._valley_blue_share(valley)
+                        - valley_blue_share
                     )
                     outlook *= max(
                         0.2,
@@ -617,8 +761,260 @@ class Island:
             return None
         return int(self.rng.choice(options, p=np.asarray(weights) / total))
 
+    def _clan_dynamics(self, turn: int) -> tuple[List[dict], List[dict]]:
+        cfg = self.cfg.tribes
+        events_out: List[dict] = []
+        ledger = [{"political_absorbed": 0, "political_split": 0} for _ in self.valleys]
+        island_populations = self._island_clan_populations()
+        spread_by_clan: Dict[str, int] = {}
+        for current_valley in self.valleys:
+            for clan, counts in current_valley.cohorts.items():
+                if counts.sum() > 0:
+                    spread_by_clan[clan] = spread_by_clan.get(clan, 0) + 1
+        existing_names = {name for valley in self.valleys for name in valley.cohorts}
+        island_total_population = max(sum(island_populations.values()), 1)
+        for valley_index, valley in enumerate(self.valleys):
+            clan_names = list(valley.cohorts)
+            valley_population = valley.population
+            if len(clan_names) < 2 or valley_population <= 0:
+                continue
+            clan_populations = {
+                clan: int(valley.cohorts[clan].sum())
+                for clan in clan_names
+                if int(valley.cohorts[clan].sum()) > 0
+            }
+            if len(clan_populations) < 2:
+                continue
+            dominant_clan = max(clan_populations, key=lambda clan: (clan_populations[clan], clan))
+            dominant_population = clan_populations[dominant_clan]
+            dominant_culture = self.cfg.traits.culture(dominant_clan)
+            dominant_share = dominant_population / max(valley_population, 1)
+            island_share = island_populations.get(dominant_clan, dominant_population) / island_total_population
+            dominant_pressure = (
+                self._clan_cohesion_signal(dominant_clan)
+                + 0.35 * dominant_culture.strength_in_numbers
+                + 0.20 * dominant_culture.harsh_discipline
+                + 0.22 * dominant_culture.insular
+            )
+            for clan in list(clan_populations):
+                if clan == dominant_clan:
+                    continue
+                counts = valley.cohorts.get(clan)
+                if counts is None:
+                    continue
+                local_population = int(counts.sum())
+                if local_population <= 0:
+                    continue
+                lifecycle = self.clan_lifecycles.get(clan, {})
+                if turn - int(lifecycle.get("birth_turn", 0)) < cfg.political_maturity_turns:
+                    continue
+                island_total = island_populations.get(clan, local_population)
+                spread = spread_by_clan.get(clan, 0)
+                if spread <= 0:
+                    continue
+                share = local_population / max(valley_population, 1)
+                cohesion = self._clan_cohesion_signal(clan)
+                fragmentation = self._clan_fragmentation_signal(clan)
+                culture = self.cfg.traits.culture(clan)
+                similarity = self._culture_similarity(clan, dominant_clan)
+
+                absorption_pressure = max(
+                    0.0,
+                    dominant_pressure
+                    + fragmentation
+                    + 0.40 * similarity * (dominant_culture.syncretic + culture.syncretic)
+                    + 0.10 * culture.peaceful
+                    + 0.45 * dominant_share
+                    + 0.30 * island_share
+                    - 1.15 * cohesion,
+                )
+                if (local_population <= cfg.diaspora_collapse_population
+                        and share <= 0.22
+                        and island_total <= cfg.minimum_independent_population * 2
+                        and self.rng.random() < min(1.0, cfg.political_absorption_chance * absorption_pressure)):
+                    valley.ensure_tribe(dominant_clan)[:] += counts
+                    valley.cohorts.pop(clan, None)
+                    spread_by_clan[clan] = max(0, spread_by_clan.get(clan, 1) - 1)
+                    island_populations[dominant_clan] = island_populations.get(dominant_clan, 0) + local_population
+                    island_populations[clan] = max(0, island_populations.get(clan, 0) - local_population)
+                    ledger[valley_index]["political_absorbed"] += local_population
+                    events_out.append({
+                        "turn": turn,
+                        "year": turn * self.cfg.years_per_turn,
+                        "type": "clan_absorbed",
+                        "valley": valley.name,
+                        "from_clan": clan,
+                        "to_clan": dominant_clan,
+                        "count": local_population,
+                    })
+                    continue
+
+                branch_pressure = max(
+                    0.0,
+                    fragmentation
+                    + 0.60 * dominant_pressure
+                    + 0.25 * share
+                    + 0.18 * (1.0 - similarity)
+                    + 0.18 * (1.0 - dominant_share)
+                    + 0.10 * (1.0 - island_share)
+                    - cohesion,
+                )
+                if (spread > 1
+                        and dominant_clan != clan
+                        and local_population >= cfg.minimum_independent_population * 2
+                        and share >= 0.18
+                        and self.rng.random() < min(1.0, cfg.political_split_chance * branch_pressure)):
+                    branch_population = int(round(local_population * np.clip(0.22 + 0.30 * fragmentation, 0.18, 0.45)))
+                    branch_population = min(branch_population, local_population - cfg.minimum_independent_population)
+                    if branch_population < cfg.minimum_independent_population:
+                        continue
+                    branch_name = tribes.unique_branch_name(clan, existing_names, cfg)
+                    existing_names.add(branch_name)
+                    branch_counts = self._sample_counts(counts, branch_population)
+                    remaining = counts - branch_counts
+                    if int(branch_counts.sum()) < cfg.minimum_independent_population or np.any(remaining < 0):
+                        continue
+                    valley.cohorts[clan] = remaining
+                    valley.ensure_tribe(branch_name)[:] += branch_counts
+                    self.cfg.traits.clans[branch_name] = tribes.mixed_culture(
+                        self.cfg.traits.culture(clan),
+                        dominant_culture,
+                        cfg.culture_mutation_band,
+                        self.rng,
+                    )
+                    self._register_clan(
+                        branch_name,
+                        turn,
+                        "split",
+                        parents=[clan],
+                        valley=valley.name,
+                    )
+                    island_populations[clan] = max(0, island_populations.get(clan, 0) - int(branch_counts.sum()))
+                    island_populations[branch_name] = island_populations.get(branch_name, 0) + int(branch_counts.sum())
+                    ledger[valley_index]["political_split"] += int(branch_counts.sum())
+                    events_out.append({
+                        "turn": turn,
+                        "year": turn * self.cfg.years_per_turn,
+                        "type": "clan_split",
+                        "valley": valley.name,
+                        "from_clan": clan,
+                        "new_clan": branch_name,
+                        "count": int(branch_counts.sum()),
+                        "reason": "political",
+                    })
+            valley.clean_empty_tribes()
+        return events_out, ledger
+
+    def _civil_war(self, turn: int) -> tuple[List[dict], set[int]]:
+        cfg = self.cfg.civil_war
+        if not cfg.enabled or self._civil_war_triggered or turn < cfg.trigger_turn:
+            return [], set()
+
+        self._civil_war_triggered = True
+        min_population = self.cfg.tribes.minimum_independent_population
+        existing_names = {name for valley in self.valleys for name in valley.cohorts}
+        events_out: List[dict] = []
+        forced_valleys: set[int] = set()
+
+        for clan in self.founding_clans:
+            total_population = sum(
+                int(valley.cohorts.get(clan, np.zeros(SHAPE, dtype=np.int64)).sum())
+                for valley in self.valleys
+            )
+            if total_population < min_population * 2:
+                continue
+
+            cohesion = self._clan_cohesion_signal(clan)
+            target_factions = int(np.clip(
+                2 + round((1.0 - cohesion) * (cfg.max_factions - 2)),
+                2,
+                cfg.max_factions,
+            ))
+            clan_events: List[dict] = []
+
+            while len(clan_events) < target_factions - 1:
+                candidates = []
+                for index, valley in enumerate(self.valleys):
+                    counts = valley.cohorts.get(clan)
+                    local_population = int(counts.sum()) if counts is not None else 0
+                    if local_population >= min_population * 2:
+                        candidates.append((index, local_population))
+                if not candidates:
+                    break
+
+                weights = np.asarray([population for _, population in candidates], dtype=float)
+                pick = int(self.rng.choice(len(candidates), p=weights / weights.sum()))
+                valley_index = candidates[pick][0]
+                valley = self.valleys[valley_index]
+                counts = valley.cohorts[clan]
+                local_population = int(counts.sum())
+                branch_fraction = float(np.clip(
+                    cfg.branch_fraction_min
+                    + (1.0 - cohesion) * 0.16
+                    + self.rng.uniform(-0.03, 0.05),
+                    cfg.branch_fraction_min,
+                    cfg.branch_fraction_max,
+                ))
+                branch_population = int(max(min_population, round(local_population * branch_fraction)))
+                branch_population = min(branch_population, local_population - min_population)
+                if branch_population < min_population:
+                    break
+
+                branch_counts = self._sample_counts(counts, branch_population)
+                remaining = counts - branch_counts
+                if int(branch_counts.sum()) < min_population or np.any(remaining < 0):
+                    break
+
+                branch_name = tribes.unique_branch_name(clan, existing_names, self.cfg.tribes)
+                existing_names.add(branch_name)
+                valley.cohorts[clan] = remaining
+                valley.ensure_tribe(branch_name)[:] += branch_counts
+                self.cfg.traits.clans[branch_name] = tribes.mixed_culture(
+                    self.cfg.traits.culture(clan),
+                    self.cfg.traits.culture(clan),
+                    self.cfg.tribes.culture_mutation_band,
+                    self.rng,
+                )
+                self._register_clan(
+                    branch_name,
+                    turn,
+                    "civil_war",
+                    parents=[clan],
+                    valley=valley.name,
+                )
+                valley.shock_memory = min(1.0, valley.shock_memory + cfg.shock_bonus)
+                forced_valleys.add(valley_index)
+                clan_events.append({
+                    "turn": turn,
+                    "year": turn * self.cfg.years_per_turn,
+                    "type": "clan_split",
+                    "valley": valley.name,
+                    "from_clan": clan,
+                    "new_clan": branch_name,
+                    "count": int(branch_counts.sum()),
+                    "reason": "civil_war",
+                })
+
+            if clan_events:
+                events_out.append({
+                    "turn": turn,
+                    "year": turn * self.cfg.years_per_turn,
+                    "type": "succession_crisis",
+                    "clan": clan,
+                    "factions": len(clan_events) + 1,
+                    "cohesion": cohesion,
+                    "cause": "succession crisis",
+                })
+                events_out.extend(clan_events)
+
+        return events_out, forced_valleys
+
     def _migrate(self, turn: int) -> tuple[List[dict], List[dict]]:
         cfg = self.cfg.migration
+        self._migration_destination_cache = {}
+        self._migration_valley_blue_shares = [
+            self._valley_blue_share(valley) for valley in self.valleys
+        ]
         deltas: List[Dict[str, np.ndarray]] = [dict() for _ in self.valleys]
         events_out: List[dict] = []
         ledger = [{"migration_attempted": 0, "migration_moved": 0,
@@ -647,7 +1043,8 @@ class Island:
                     [available_by_tribe[name].sum() * (
                         1.0 + self.cfg.traits.culture(name).migratory
                         - 0.6 * self.cfg.traits.culture(name).stationary
-                        + self._genotype_migration_drive(available_by_tribe[name]))
+                        + self._adult_ancestry_effect(
+                            available_by_tribe[name], self.cfg.traits.genes.frontier_drive))
                      for name in tribe_names], dtype=float)
                 tribe_weights = np.maximum(tribe_weights, 0.01)
                 tribe = str(self.rng.choice(tribe_names, p=tribe_weights / tribe_weights.sum()))
@@ -708,15 +1105,18 @@ class Island:
                     raise RuntimeError("migration produced negative cohort counts")
                 valley.cohorts[tribe] = updated
             valley.clean_empty_tribes()
+        self._migration_destination_cache = None
+        self._migration_valley_blue_shares = None
         return events_out, ledger
 
-    def _conflicts(self, turn: int) -> tuple[List[dict], List[dict]]:
+    def _conflicts(self, turn: int, forced_valleys: Optional[set[int]] = None) -> tuple[List[dict], List[dict]]:
         cfg = self.cfg.conflict
         ledger = [{"war_deaths": 0, "war_refugees": 0,
                    "war_food_destroyed": 0.0, "war_land_damage": 0.0,
                    "seceded": 0} for _ in self.valleys]
         if not cfg.enabled:
             return [], ledger
+        forced_valleys = forced_valleys or set()
 
         planned = []
         snapshots = [{tribe: counts.copy() for tribe, counts in valley.cohorts.items()}
@@ -740,24 +1140,42 @@ class Island:
             probability = min(1.0, cultural_pressure * (
                 cfg.base_chance + cfg.shortage_pressure * shortage
                 + 0.10 * damage_pressure))
-            if self.rng.random() >= probability:
+            if index in forced_valleys:
+                probability = 1.0
+            elif self.rng.random() >= probability:
                 continue
             xenophobic_share = self._weighted_culture_signal(valley, "xenophobic")
             xenophile_share = self._weighted_culture_signal(valley, "xenophile")
             harsh_share = self._weighted_culture_signal(valley, "harsh_discipline")
             nurturing_share = self._weighted_culture_signal(valley, "nurturing")
+            baseline_cohesion = 0.0
+            if total_people:
+                baseline_cohesion = sum(
+                    int(counts.sum()) * self._clan_cohesion_signal(clan)
+                    for clan, counts in tribe_counts.items()
+                ) / total_people
             split = conflict.partition_factions(
                 tribe_counts,
-                min(1.0, self.cfg.tribes.clan_cohesion
+                min(1.0, baseline_cohesion
                     + self.cfg.tribes.shock_cohesion_bonus * valley.shock_memory
                     + self._arrival_cohesion_bonus(valley)
-                    + 0.18 * xenophobic_share + 0.12 * harsh_share
-                    - 0.16 * xenophile_share - 0.08 * nurturing_share),
+                    + 0.10 * xenophobic_share + 0.08 * harsh_share
+                    - 0.10 * xenophile_share - 0.06 * nurturing_share),
                 self.rng)
             planned.append((index, split, probability))
 
         events_out = []
         refugee_flows = []
+
+        def summarize_side(side: Dict[str, np.ndarray]) -> List[dict]:
+            return [
+                {"clan": clan, "population": int(counts.sum())}
+                for clan, counts in sorted(
+                    side.items(), key=lambda item: (-int(item[1].sum()), item[0])
+                )
+                if int(counts.sum()) > 0
+            ]
+
         for index, split, probability in planned:
             valley = self.valleys[index]
             first_adults = sum(int(counts[:, demography.ADULT, :].sum())
@@ -767,15 +1185,17 @@ class Island:
             first_wins = bool(self.rng.random() < first_adults / (first_adults + second_adults))
             winning_side = split.first if first_wins else split.second
             losing_side = split.second if first_wins else split.first
+            first_summary = summarize_side(split.first)
+            second_summary = summarize_side(split.second)
+            winner_summary = first_summary if first_wins else second_summary
+            loser_summary = second_summary if first_wins else first_summary
             survivors_by_clan = {}
             displaced_by_clan = {}
             deaths_by_clan = {}
             deaths = 0
             for clan in valley.cohorts:
                 culture = self.cfg.traits.culture(clan)
-                war_resistance = np.asarray(self.cfg.traits.genes.war_resistance)
-                resistance = war_resistance + 0.12 * culture.warlike
-                resistance += 0.10 * culture.strong_individuals
+                resistance = 0.12 * culture.warlike + 0.10 * culture.strong_individuals
                 vulnerability = (1.0 + 0.12 * culture.strength_in_numbers
                                  + 0.18 * culture.peaceful
                                  - 0.10 * culture.strong_individuals)
@@ -852,6 +1272,10 @@ class Island:
                 "winner": "first" if first_wins else "second", "deaths": deaths,
                 "refugees": refugee_count, "food_destroyed": food_destroyed,
                 "land_damage": land_damage,
+                "first_clans": first_summary,
+                "second_clans": second_summary,
+                "winner_clans": winner_summary,
+                "loser_clans": loser_summary,
                 "clan_splits": split.first_probabilities,
                 "outcome": "secession" if seceded_name else "displaced",
                 "new_clan": seceded_name,
@@ -917,29 +1341,42 @@ class Island:
                 shares /= shares.sum()
                 pair_weights = np.outer(shares, shares)
                 endogamy = self.cfg.tribes.clan_endogamy
+                cultures = [self.cfg.traits.culture(name) for name in tribe_names]
+                adult_totals = np.asarray([
+                    adult_genotypes_by_tribe[name].sum() for name in tribe_names
+                ], dtype=float)
+                adult_blue_shares = np.divide(
+                    np.asarray([
+                        adult_genotypes_by_tribe[name][2] for name in tribe_names
+                    ], dtype=float),
+                    adult_totals,
+                    out=np.zeros(len(tribe_names), dtype=float),
+                    where=adult_totals > 0,
+                )
+                phenotype_gaps = np.abs(
+                    adult_blue_shares[:, np.newaxis] - adult_blue_shares[np.newaxis, :]
+                )
+                xenophile = np.asarray([culture.xenophile for culture in cultures])
+                xenophobic = np.asarray([culture.xenophobic for culture in cultures])
+                pair_openness = np.maximum(
+                    0.15,
+                    1.0
+                    + 0.6 * (xenophile[:, np.newaxis] + xenophile[np.newaxis, :]) * phenotype_gaps
+                    - 0.7 * (xenophobic[:, np.newaxis] + xenophobic[np.newaxis, :]) * phenotype_gaps,
+                )
                 pair_weights *= 1.0 - endogamy
+                pair_weights *= pair_openness
                 diagonal = np.diag_indices_from(pair_weights)
                 pair_weights[diagonal] += endogamy * shares
-                for first_index, first_tribe in enumerate(tribe_names):
-                    for second_index, second_tribe in enumerate(tribe_names):
-                        if first_index == second_index:
-                            continue
-                        pair_weights[first_index, second_index] *= self._cross_clan_openness(
-                            first_tribe,
-                            adult_genotypes_by_tribe[first_tribe],
-                            second_tribe,
-                            adult_genotypes_by_tribe[second_tribe],
-                        )
                 pair_probabilities = (pair_weights / pair_weights.sum()).reshape(-1)
                 pair_birth_totals = self.rng.multinomial(births, pair_probabilities).reshape(
                     len(tribe_names), len(tribe_names))
                 cross_tribe_births = 0
                 pair_details = []
                 for first_index, first_tribe in enumerate(tribe_names):
-                    for second_index, second_tribe in enumerate(tribe_names):
+                    for second_index in np.flatnonzero(pair_birth_totals[first_index]):
+                        second_tribe = tribe_names[second_index]
                         pair_births = int(pair_birth_totals[first_index, second_index])
-                        if pair_births == 0:
-                            continue
                         genotype_counts = np.asarray(genetics.birth_counts_from_parent_pools(
                             adult_genotypes_by_tribe[first_tribe],
                             adult_genotypes_by_tribe[second_tribe], pair_births, self.rng),
@@ -951,31 +1388,41 @@ class Island:
                         cross_tribe_births += pair_births
                         parent_key = frozenset((first_tribe, second_tribe))
                         mixed_name = self.mixed_clans.get(parent_key)
-                        openness = self._cross_clan_openness(
-                            first_tribe,
-                            adult_genotypes_by_tribe[first_tribe],
-                            second_tribe,
-                            adult_genotypes_by_tribe[second_tribe],
-                        )
+                        openness = pair_openness[first_index, second_index]
                         mixed_clan_chance = min(
                             1.0,
-                            self.cfg.tribes.mixed_clan_chance * openness,
+                            self.cfg.tribes.mixed_clan_chance * openness * max(
+                                0.2,
+                                1.0
+                                + 0.8 * 0.5 * (
+                                    cultures[first_index].syncretic
+                                    + cultures[second_index].syncretic
+                                ) * self._culture_similarity(first_tribe, second_tribe)
+                                - 0.7 * 0.5 * (
+                                    cultures[first_index].insular
+                                    + cultures[second_index].insular
+                                ),
+                            ),
                         )
                         if (mixed_name is None
-                            and "-" not in first_tribe
-                            and "-" not in second_tribe
                             and self.rng.random() < mixed_clan_chance):
                             existing_names = {
                                 name for current_valley in self.valleys
                                 for name in current_valley.cohorts
                             }
-                            mixed_name = tribes.unique_mixed_name(
-                                first_tribe, second_tribe, existing_names)
-                            self.mixed_clans[parent_key] = mixed_name
-                            self.cfg.traits.clans[mixed_name] = tribes.mixed_culture(
-                                self.cfg.traits.culture(first_tribe),
-                                self.cfg.traits.culture(second_tribe),
+                            mixed_culture = tribes.mixed_culture(
+                                cultures[first_index],
+                                cultures[second_index],
                                 self.cfg.tribes.culture_mutation_band, self.rng)
+                            dominant_parent = (
+                                first_tribe if adult_by_tribe[first_tribe] >= adult_by_tribe[second_tribe]
+                                else second_tribe
+                            )
+                            mixed_name = tribes.unique_mixed_name(
+                                first_tribe, second_tribe, dominant_parent, mixed_culture,
+                                existing_names, self.rng)
+                            self.mixed_clans[parent_key] = mixed_name
+                            self.cfg.traits.clans[mixed_name] = mixed_culture
                             self._register_clan(
                                 mixed_name,
                                 turn,
@@ -1031,14 +1478,17 @@ class Island:
         event_batch = self._erupt(turn)
         demographic_ledgers = self._food_and_demography()
         migration_events, migration_ledgers = self._migrate(turn)
-        conflict_events, conflict_ledgers = self._conflicts(turn)
+        civil_war_events, forced_conflict_valleys = self._civil_war(turn)
+        conflict_events, conflict_ledgers = self._conflicts(turn, forced_conflict_valleys)
         birth_events, birth_ledgers = self._births(turn)
+        political_events, political_ledgers = self._clan_dynamics(turn)
         expedition_events = self._move_or_depart_arrivals(turn)
         self._advance_residency_and_land()
         lifecycle_events = self._record_clan_extinctions(clans_before, turn)
         self.event_log.extend(
-            arrival_events + event_batch + migration_events + conflict_events + birth_events
-            + expedition_events + lifecycle_events
+            arrival_events + event_batch + migration_events + civil_war_events
+            + conflict_events + birth_events
+            + political_events + expedition_events + lifecycle_events
         )
         ledgers = []
         for index, valley in enumerate(self.valleys):
@@ -1048,6 +1498,7 @@ class Island:
                 **demographic_ledgers[index],
                 **migration_ledgers[index],
                 **conflict_ledgers[index],
+                **political_ledgers[index],
                 "assimilated": 0,
                 **birth_ledgers[index],
                 "ending_population": valley.population,
@@ -1092,8 +1543,27 @@ class Island:
                 }
                 for trait in ("warlike", "peaceful", "strength_in_numbers",
                               "strong_individuals", "xenophile", "xenophobic",
-                              "harsh_discipline", "nurturing", "migratory", "stationary")
+                              "syncretic", "insular",
+                              "harsh_discipline", "nurturing", "agrarian",
+                              "hunter_gatherer", "migratory", "stationary")
             }
+            trait_scores = self._trait_scores(clan_populations)
+            dominant_traits = [
+                {"trait": trait, "score": score}
+                for trait, score in sorted(trait_scores.items(), key=lambda item: (-item[1], item[0]))
+                if score > 0.01
+            ][:3]
+            dominant_clan = max(clan_populations.items(), key=lambda item: (item[1], item[0]))[0] if clan_populations else None
+            ranked_distribution = sorted(
+                clan_populations.items(), key=lambda item: (-item[1], item[0])
+            )
+            clan_distribution = [
+                {"clan": clan, "population": population}
+                for clan, population in ranked_distribution[:6]
+            ]
+            other_population = sum(population for _, population in ranked_distribution[6:])
+            if other_population > 0:
+                clan_distribution.append({"clan": "Other", "population": other_population})
             valleys.append({
                 "name": valley.name,
                 "population": valley.population,
@@ -1112,8 +1582,12 @@ class Island:
                 "ash_bonus_turns": valley.ash_bonus_turns,
                 "shock_memory": valley.shock_memory,
                 "surplus_memory": valley.surplus_memory,
+                "habitability": self._habitability_score(valley),
                 "eruption": valley.erupted_this_turn,
                 "tribes": clan_populations,
+                "clan_distribution": clan_distribution,
+                "dominant_clan": dominant_clan,
+                "dominant_traits": dominant_traits,
                 "clan_bb_counts": clan_bb_counts,
                 "clan_traits": {
                     clan: asdict(self.cfg.traits.culture(clan))
@@ -1155,8 +1629,10 @@ class Island:
         return self.history
 
     def provenance(self) -> dict:
+        config = asdict(self.cfg)
+        config["traits"]["locked_founders"] = sorted(config["traits"].get("locked_founders", []))
         return {
             "model": "island-food-cohort-v1",
             "seed": self.cfg.seed,
-            "config": asdict(self.cfg),
+            "config": config,
         }

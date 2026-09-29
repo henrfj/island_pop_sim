@@ -6,7 +6,7 @@ venv/
 
 # Generated simulation outputs
 fig*.png
-island_replay.html
+*.html
 
 # Editor / OS noise
 .vscode/

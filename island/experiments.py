@@ -1,6 +1,8 @@
 """Small ensemble runner for checking whether behavior survives seed changes."""
 from collections import Counter
 from dataclasses import asdict, dataclass
+import sys
+import time
 from typing import Callable, Iterable, List
 import numpy as np
 
@@ -8,6 +10,23 @@ from .config import (SimulationConfig, default_valleys, main_volcanic_scenario,
                      neutral_control_scenario)
 from .viz.export_ensemble_html import export_ensemble_html
 from .world import Island
+
+TRAIT_NAMES = (
+    "warlike",
+    "peaceful",
+    "strength_in_numbers",
+    "strong_individuals",
+    "xenophile",
+    "xenophobic",
+    "syncretic",
+    "insular",
+    "harsh_discipline",
+    "nurturing",
+    "agrarian",
+    "hunter_gatherer",
+    "migratory",
+    "stationary",
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +48,11 @@ class RunSummary:
     deaths_by_source_series: dict
     baseline_deaths_by_stage_series: dict
     deaths_by_genotype_series: dict
+    final_trait_population: dict
+    final_trait_share: dict
+    dominant_clan: str
+    dominant_clan_population: int
+    dominant_clan_traits: tuple
 
 
 def _genetic_metrics(snapshot: dict) -> tuple[float, tuple, int, float, float]:
@@ -75,6 +99,59 @@ def _per_1000(events: tuple | list, populations: tuple | list) -> tuple:
     )
 
 
+def _final_trait_metrics(snapshot: dict) -> tuple[dict, dict]:
+    trait_population = {trait: 0 for trait in TRAIT_NAMES}
+    total_population = sum(valley["population"] for valley in snapshot["valleys"])
+    for valley in snapshot["valleys"]:
+        for trait in TRAIT_NAMES:
+            trait_population[trait] += int(valley["trait_populations"][trait]["positive"])
+    trait_share = {
+        trait: (population / total_population if total_population > 0 else 0.0)
+        for trait, population in trait_population.items()
+    }
+    return trait_population, trait_share
+
+
+def _dominant_clan_metrics(snapshot: dict) -> tuple[str, int, tuple]:
+    population_by_clan = snapshot["totals"].get("population_by_clan", {})
+    if not population_by_clan:
+        return "none", 0, tuple()
+    dominant_clan, dominant_population = max(
+        population_by_clan.items(), key=lambda item: (item[1], item[0])
+    )
+    dominant_traits = {}
+    for valley in snapshot["valleys"]:
+        if dominant_clan in valley["clan_traits"]:
+            dominant_traits = valley["clan_traits"][dominant_clan]
+            break
+    active_traits = tuple(
+        trait for trait, value in dominant_traits.items()
+        if value > 0
+    )
+    return dominant_clan, int(dominant_population), active_traits
+
+
+def _format_elapsed(seconds: float) -> str:
+    minutes, seconds = divmod(max(0, int(seconds)), 60)
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _write_progress(label: str, completed: int, total: int, started: float) -> None:
+    if not sys.stderr.isatty():
+        return
+    elapsed = time.perf_counter() - started
+    fraction = completed / total if total else 1.0
+    filled = int(24 * fraction)
+    eta = _format_elapsed(elapsed / completed * (total - completed)) if completed else "--:--"
+    line = (
+        f"{label} [{'#' * filled}{'-' * (24 - filled)}] "
+        f"{completed}/{total} ({fraction:.0%}) "
+        f"elapsed {_format_elapsed(elapsed)} ETA {eta}"
+    )
+    sys.stderr.write("\r" + line + ("\n" if completed >= total else ""))
+    sys.stderr.flush()
+
+
 def _aggregate_runs(runs: List[RunSummary], label: str, color: str) -> dict:
     final_population = np.asarray([run.final_population for run in runs], dtype=float)
     min_population = np.asarray([run.minimum_population for run in runs], dtype=float)
@@ -84,6 +161,39 @@ def _aggregate_runs(runs: List[RunSummary], label: str, color: str) -> dict:
     source_names = list(runs[0].deaths_by_source_series)
     genotype_names = list(runs[0].deaths_by_genotype_series)
     stage_names = list(runs[0].baseline_deaths_by_stage_series)
+    trait_summary = []
+    for trait in TRAIT_NAMES:
+        populations = [run.final_trait_population[trait] for run in runs]
+        shares = [run.final_trait_share[trait] for run in runs]
+        trait_summary.append({
+            "trait": trait,
+            "median_population": float(np.median(populations)),
+            "median_share": float(np.median(shares)),
+            "p90_share": float(np.quantile(shares, 0.9)),
+        })
+    trait_summary.sort(key=lambda item: (-item["median_share"], -item["median_population"], item["trait"]))
+
+    dominant_clan_counter = Counter(run.dominant_clan for run in runs)
+    dominant_clan_summary = [
+        {
+            "clan": clan,
+            "runs": count,
+            "median_population": float(np.median([
+                run.dominant_clan_population for run in runs if run.dominant_clan == clan
+            ])),
+        }
+        for clan, count in dominant_clan_counter.most_common()
+    ]
+
+    dominant_clan_runs = [
+        {
+            "seed": run.seed,
+            "clan": run.dominant_clan,
+            "population": run.dominant_clan_population,
+            "traits": list(run.dominant_clan_traits),
+        }
+        for run in runs
+    ]
     return {
         "label": label,
         "color": color,
@@ -104,7 +214,10 @@ def _aggregate_runs(runs: List[RunSummary], label: str, color: str) -> dict:
                 name: float(np.median([run.deaths_by_genotype_series[name][-1] for run in runs]))
                 for name in genotype_names
             },
+            "trait_success": trait_summary,
+            "dominant_clans": dominant_clan_summary,
         },
+        "dominant_clan_runs": dominant_clan_runs,
         "series": {
             "population": _band([run.population_series for run in runs]),
             "q": _band([run.q_series for run in runs]),
@@ -135,11 +248,15 @@ def _aggregate_runs(runs: List[RunSummary], label: str, color: str) -> dict:
     }
 
 
-def run_ensemble(seeds: Iterable[int], turns: int = 80,
+def run_ensemble(seeds: Iterable[int], turns: int = 500,
                  eruptions: bool = True,
-                 scenario: Callable = None) -> List[RunSummary]:
+                 scenario: Callable = None,
+                 progress_label: str = "Ensemble") -> List[RunSummary]:
+    seed_values = list(seeds)
     summaries = []
-    for seed in seeds:
+    started = time.perf_counter()
+    _write_progress(progress_label, 0, len(seed_values), started)
+    for index, seed in enumerate(seed_values, start=1):
         if scenario is None:
             cfg = SimulationConfig(turns=turns, seed=int(seed))
             specs = default_valleys()
@@ -177,6 +294,10 @@ def run_ensemble(seeds: Iterable[int], turns: int = 80,
                          for snapshot in island.history)
             for stage in island.history[-1]["totals"]["baseline_deaths_by_stage"]
         }
+        final_trait_population, final_trait_share = _final_trait_metrics(island.history[-1])
+        dominant_clan, dominant_clan_population, dominant_clan_traits = _dominant_clan_metrics(
+            island.history[-1]
+        )
         summaries.append(RunSummary(
             seed=cfg.seed,
             final_population=populations[-1],
@@ -195,15 +316,25 @@ def run_ensemble(seeds: Iterable[int], turns: int = 80,
             deaths_by_source_series=deaths_by_source_series,
             baseline_deaths_by_stage_series=baseline_deaths_by_stage_series,
             deaths_by_genotype_series=deaths_by_genotype_series,
+            final_trait_population=final_trait_population,
+            final_trait_share=final_trait_share,
+            dominant_clan=dominant_clan,
+            dominant_clan_population=dominant_clan_population,
+            dominant_clan_traits=dominant_clan_traits,
         ))
+        _write_progress(progress_label, index, len(seed_values), started)
     return summaries
 
 
 def main() -> None:
-    seeds = np.random.SeedSequence(20260923).generate_state(100)
+    seeds = np.random.SeedSequence(20260923).generate_state(25)
     seed_values = [int(seed) for seed in seeds]
-    runs = run_ensemble(seed_values, scenario=main_volcanic_scenario)
-    controls = run_ensemble(seed_values, scenario=neutral_control_scenario)
+    runs = run_ensemble(
+        seed_values, scenario=main_volcanic_scenario, progress_label="Volcanic"
+    )
+    controls = run_ensemble(
+        seed_values, scenario=neutral_control_scenario, progress_label="Neutral control"
+    )
     final = np.asarray([run.final_population for run in runs])
     minimum_security = np.asarray([run.minimum_food_security for run in runs])
     print(f"runs={len(runs)}")

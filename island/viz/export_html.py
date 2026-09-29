@@ -16,18 +16,20 @@ header{padding:18px 24px 12px;background:var(--panel);border-bottom:1px solid va
 .map{position:relative;width:640px;height:480px;margin:auto;background:radial-gradient(circle at center,#efe6d4 0 16%,transparent 17%),var(--sea);overflow:hidden}.routes{position:absolute;inset:0;width:100%;height:100%}.path{stroke:var(--path);stroke-width:3}.canoe{stroke:var(--canoe);stroke-width:2;stroke-dasharray:7 6}.event-route{stroke:#c02f2f;stroke-width:5;stroke-linecap:round;opacity:.85}.event-route.canoe-event{stroke:#167b9c;stroke-dasharray:8 5}
 .volcano{position:absolute;left:264px;top:188px;width:112px;height:104px;text-align:center;padding-top:20px;font-size:43px}.volcano small{display:block;font:12px Georgia;color:#743c26}.valley{position:absolute;width:210px;min-height:154px;padding:10px;border:3px solid var(--color);background:rgba(255,255,255,.94);box-shadow:0 2px 7px #46544a24}.v0{left:215px;top:14px}.v1{right:14px;top:174px}.v2{left:215px;bottom:14px}.v3{left:14px;top:174px}.valley h3{font-size:15px;margin:0 0 6px;display:flex;justify-content:space-between}.badge{font-size:20px;min-width:26px}.line{display:flex;justify-content:space-between;font:12px/1.45 Consolas,monospace}.bars{display:grid;grid-template-columns:40px 1fr;gap:4px 6px;margin-top:6px;font:10px Consolas,monospace}.bar{height:8px;background:#e6e5df;overflow:hidden}.bar i{display:block;height:100%}.clans{margin-top:8px;font:10px/1.4 Consolas,monospace;color:var(--muted);white-space:normal}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;color:var(--muted);font-size:11px}.events{height:440px;overflow:auto;font:12px/1.4 Consolas,monospace}.event{padding:7px 6px;border-bottom:1px solid #eee;cursor:pointer}.event:hover,.event.current{background:#f5e9bd}.empty{color:var(--muted)}
-.traits{margin-top:16px}.trait-grid{display:grid;grid-template-columns:1fr 1.25fr;gap:14px}.trait-table{width:100%;border-collapse:collapse;font:11px Consolas,monospace}.trait-table th,.trait-table td{padding:4px 6px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.trait-table th{color:var(--muted);font-weight:normal}.trait-name{font-family:Georgia,"Times New Roman",serif;text-transform:capitalize}
+.traits{margin-top:16px}.trait-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}.trait-table{width:100%;border-collapse:collapse;font:11px Consolas,monospace}.trait-table th,.trait-table td{padding:4px 6px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.trait-table th{color:var(--muted);font-weight:normal}.trait-name{font-family:Georgia,"Times New Roman",serif;text-transform:capitalize}.scroll-list{max-height:300px;overflow:auto;border-top:1px solid #eee;border-bottom:1px solid #eee}.stat-list{font:11px/1.45 Consolas,monospace}.stat-row{display:grid;grid-template-columns:1fr auto;gap:8px;padding:6px 4px;border-bottom:1px solid #eee}.stat-row:last-child{border-bottom:0}.stat-row small{display:block;color:var(--muted);font-size:10px}.stack{display:grid;gap:12px}
+.pie-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:8px}.pie-card{border:1px solid #eee;padding:10px}.pie-card h3{display:flex;justify-content:space-between;gap:8px}.pie-wrap{display:grid;grid-template-columns:110px 1fr;gap:12px;align-items:center}.pie{width:100px;height:100px;border-radius:50%;position:relative;border:1px solid #ddd}.pie::after{content:'';position:absolute;inset:22px;border-radius:50%;background:var(--panel);border:1px solid #eee}.pie-legend{display:grid;gap:4px}.pie-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
 .chart-tools{display:flex;gap:12px;align-items:center;margin-top:16px;color:var(--muted);font:11px Consolas,monospace}.chart-tools label{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
 .charts{margin-top:8px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.chart{min-width:0}.chart svg{display:block;width:100%;height:230px}.chart.bar-chart svg{height:auto;min-height:230px}.chart-note{margin-top:6px;color:var(--muted);font:10px/1.35 Consolas,monospace}.chart-legend{display:flex;gap:8px;flex-wrap:wrap;font:10px Consolas,monospace;color:var(--muted)}.key{display:inline-flex;align-items:center;gap:3px}.sw{width:12px;height:3px;display:inline-block}.marker-glyph{font:12px Consolas,monospace}.meta{margin-top:12px}.meta summary{cursor:pointer;color:var(--muted);font-size:12px}.meta pre{font:10px Consolas,monospace;white-space:pre-wrap;max-height:180px;overflow:auto}
-@media(max-width:1100px){.shell{padding:8px}.top{display:block}.top>.panel:first-child{overflow-x:auto}.map{transform-origin:top left}.events{height:240px}.trait-grid{grid-template-columns:1fr}.charts{display:flex;overflow-x:auto}.chart{min-width:360px}.controls{padding:8px}.time{min-width:100px}.controls select{max-width:74px}}
+@media(max-width:1100px){.shell{padding:8px}.top{display:block}.top>.panel:first-child{overflow-x:auto}.map{transform-origin:top left}.events{height:240px}.trait-grid{grid-template-columns:1fr}.pie-grid{grid-template-columns:1fr 1fr}.charts{display:flex;overflow-x:auto}.chart{min-width:360px}.controls{padding:8px}.time{min-width:100px}.controls select{max-width:74px}}
+@media(max-width:760px){.pie-grid{grid-template-columns:1fr}.pie-wrap{grid-template-columns:1fr}.pie{margin:auto}}
 </style></head><body>
 <header><h1>Fire Island</h1><p>Replay with clan lifecycle and mortality debugging overlays.</p></header>
 <div class="controls"><button class="icon" id="play" title="Play">&#9654;</button><input id="slider" type="range" min="0" value="0"><select id="speed" title="Playback speed"><option value="650">0.5x</option><option value="320" selected>1x</option><option value="120">3x</option></select><span class="time" id="time"></span></div>
-<div class="shell"><div class="top"><section class="panel"><h2>Island</h2><div class="map" id="map"><svg class="routes" viewBox="0 0 640 480"><line class="path" x1="320" y1="80" x2="550" y2="240"/><line class="path" x1="550" y1="240" x2="320" y2="410"/><line class="path" x1="320" y1="410" x2="90" y2="240"/><line class="path" x1="90" y1="240" x2="320" y2="80"/><line class="canoe" x1="320" y1="80" x2="320" y2="410"/><line class="canoe" x1="90" y1="240" x2="550" y2="240"/><g id="eventRoutes"></g></svg><div class="volcano">🌋<small>central volcano</small></div><div id="valleys"></div></div><div class="legend"><span>solid: mountain path</span><span>dashed: canoe route</span><span>genetics: BB / Bb / bb</span><span>events show for selected turn</span></div></section><aside class="panel"><h2>Event log</h2><div class="events" id="events"></div></aside></div><section class="panel traits"><h2>Traits and active clans</h2><div class="trait-grid" id="traits"></div></section><div class="chart-tools"><label><input type="checkbox" id="hideBaseline"> hide baseline on death-source charts</label><span>baseline means ordinary cohort mortality from the survival schedule</span></div><section class="charts" id="charts"></section><details class="meta"><summary>Run provenance</summary><pre id="meta"></pre></details></div>
+<div class="shell"><div class="top"><section class="panel"><h2>Island</h2><div class="map" id="map"><svg class="routes" viewBox="0 0 640 480"><line class="path" x1="320" y1="80" x2="550" y2="240"/><line class="path" x1="550" y1="240" x2="320" y2="410"/><line class="path" x1="320" y1="410" x2="90" y2="240"/><line class="path" x1="90" y1="240" x2="320" y2="80"/><line class="canoe" x1="320" y1="80" x2="320" y2="410"/><line class="canoe" x1="90" y1="240" x2="550" y2="240"/><g id="eventRoutes"></g></svg><div class="volcano">🌋<small>central volcano</small></div><div id="valleys"></div></div><div class="legend"><span>solid: mountain path</span><span>dashed: canoe route</span><span>ancestry markers: BB / Bb / bb</span><span>events show for selected turn</span></div></section><aside class="panel"><h2>Event log</h2><div class="events" id="events"></div></aside></div><section class="panel traits"><h2>Politics and habitability</h2><div class="trait-grid" id="traits"></div></section><section class="panel"><h2>Clan distribution by valley</h2><div class="pie-grid" id="clanPies"></div></section><div class="chart-tools"><label><input type="checkbox" id="hideBaseline"> hide baseline on death-source charts</label><span>baseline means ordinary cohort mortality from the survival schedule</span></div><section class="charts" id="charts"></section><details class="meta"><summary>Run provenance</summary><pre id="meta"></pre></details></div>
 <script>
 const DATA=__DATA__,COLORS=__COLORS__,history=DATA.history,events=DATA.events,names=DATA.valleyOrder;
 const POS=[[320,80],[550,240],[320,410],[90,240]];
-const ICONS={eruption:'🌋',war:'⚔️',migration:'🚶',storm:'⛈️',refugees:'🧳',clan_split:'✂️',clan_merge:'🧬',clan_extinct:'☠️',clan_arrival:'🚢',clan_departure:'⇢',clan_expedition:'⛵'};
+const ICONS={eruption:'🌋',war:'⚔️',migration:'🚶',storm:'⛈️',refugees:'🧳',clan_split:'✂️',clan_merge:'🧬',clan_absorbed:'⇋',clan_extinct:'☠️',clan_arrival:'🚢',clan_departure:'⇢',clan_expedition:'⛵',succession_crisis:'👑'};
 const DEATH_SOURCE_COLORS={eruption:'#b33a3a',baseline:'#6b5b95',shortage:'#c76d28',storm:'#4f91a7',war:'#20231f'};
 const GENOTYPE_COLORS={BB:'#7a4b2a',Bb:'#d9a05b',bb:'#2e75b6'};
 const STAGE_COLORS={child:'#C76D28',adult:'#237A57',elder:'#6B5B95'};
@@ -40,18 +42,21 @@ function label(v){return v.replaceAll('_',' ')}
 function signed(v){return `${v>=0?'+':''}${Math.round(v*100)}%`}
 function clanColor(name){let hash=0;for(const ch of name){hash=(hash*31+ch.charCodeAt(0))>>>0}return CLAN_COLORS[hash%CLAN_COLORS.length]}
 function log1p10(v){return Math.log10(v+1)}
+function clanList(summary){return (summary||[]).slice(0,3).map(item=>`${item.clan} ${item.population}`).join(', ')}
 function eventText(ev){
   if(ev.type==='migration')return `y${ev.year} migration ${ev.from} → ${ev.to} ${ev.count}`;
   if(ev.type==='storm')return `y${ev.year} storm ${ev.from} → ${ev.to} lost ${ev.lost}`;
   if(ev.type==='refugees')return `y${ev.year} refugees ${ev.from} → ${ev.to} ${ev.count}`;
   if(ev.type==='eruption')return `y${ev.year} eruption ${ev.valley} deaths ${ev.deaths}`;
-  if(ev.type==='war')return `y${ev.year} war ${ev.valley} deaths ${ev.deaths} refugees ${ev.refugees}`;
+  if(ev.type==='war')return `y${ev.year} war ${ev.valley} ${clanList(ev.winner_clans)||ev.winner} beat ${clanList(ev.loser_clans)||'rivals'} deaths ${ev.deaths} refugees ${ev.refugees}`;
   if(ev.type==='clan_merge')return `y${ev.year} clan merge ${ev.first} + ${ev.second} → ${ev.new_clan}`;
   if(ev.type==='clan_split')return `y${ev.year} clan split ${ev.from_clan} → ${ev.new_clan} ${ev.count}`;
+  if(ev.type==='clan_absorbed')return `y${ev.year} clan absorbed ${ev.from_clan} → ${ev.to_clan} ${ev.count}`;
   if(ev.type==='clan_extinct')return `y${ev.year} clan extinct ${ev.tribe} total deaths ${ev.total_deaths}`;
   if(ev.type==='clan_arrival')return `y${ev.year} arrival ${ev.tribe} at ${ev.valley} ${ev.count} depart by y${ev.departure_year}`;
   if(ev.type==='clan_departure')return `y${ev.year} departure ${ev.tribe} ${ev.count}`;
   if(ev.type==='clan_expedition')return `y${ev.year} expedition ${ev.tribe} ${ev.from} → ${ev.to} ${ev.count}`;
+  if(ev.type==='succession_crisis')return `y${ev.year} succession crisis ${ev.clan} fractured into ${ev.factions} factions`;
   return `y${ev.year} ${label(ev.type)}`;
 }
 function incremental(values){return values.map((value,index)=>value-(index?values[index-1]:0))}
@@ -68,32 +73,71 @@ events.forEach(ev=>{const row=document.createElement('div');row.className='event
 function renderTraits(index){
   const snapshot=history[index];
   const genes=DATA.provenance.config.traits.genes;
+  const clanTraits=DATA.provenance.config.traits.clans||{};
   const geneRows=Object.entries(genes).map(([name,values])=>`<tr><td class="trait-name">${label(name)}</td>${values.map(value=>`<td>${signed(value)}</td>`).join('')}</tr>`).join('');
-  const active=new Map();
-  snapshot.valleys.forEach(valley=>{
-    Object.entries(valley.tribes).forEach(([clan,population])=>{
-      if(!active.has(clan))active.set(clan,{population:0,valleys:new Set(),traits:valley.clan_traits[clan]||{}});
-      const row=active.get(clan);
-      row.population+=population;
-      row.valleys.add(valley.name);
+  const populationByClan=snapshot.totals.population_by_clan||{};
+  const totalPopulation=snapshot.totals.population||0;
+  const dominantClanRows=Object.entries(populationByClan).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([name,population])=>{
+    const traits=Object.entries(clanTraits[name]||{}).filter(([,value])=>value>0.01).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([key,value])=>`${label(key)} ${signed(value)}`).join(', ')||'neutral';
+    const share=totalPopulation?Math.round(population*100/totalPopulation):0;
+    return `<div class="stat-row"><div><strong>${esc(name)}</strong><small>${share}% of island population</small><small>${esc(traits)}</small></div><b>${population}</b></div>`;
+  }).join('')||'<div class="empty">No clans</div>';
+  const traitTotals=new Map();
+  Object.entries(populationByClan).forEach(([name,population])=>{
+    Object.entries(clanTraits[name]||{}).forEach(([key,value])=>{
+      if(value<=0)return;
+      traitTotals.set(key,(traitTotals.get(key)||0)+population*value);
     });
   });
-  const clanRows=[...active.entries()].sort((a,b)=>b[1].population-a[1].population).map(([name,row])=>{
-    const traits=Object.entries(row.traits).filter(([,value])=>value).map(([key,value])=>`${label(key)} ${signed(value)}`).join(', ')||'neutral';
-    return `<tr><td class="trait-name">${esc(name)}</td><td>${row.population}</td><td>${esc([...row.valleys].join(', '))}</td><td>${esc(traits)}</td></tr>`;
-  }).join('')||'<tr><td colspan="4">No active clans</td></tr>';
-  document.getElementById('traits').innerHTML=`<div><h3>Gene traits</h3><table class="trait-table"><thead><tr><th>effect</th><th>BB</th><th>Bb</th><th>bb</th></tr></thead><tbody>${geneRows}</tbody></table></div><div><h3>Active clans at this turn</h3><table class="trait-table"><thead><tr><th>clan</th><th>pop</th><th>valleys</th><th>traits</th></tr></thead><tbody>${clanRows}</tbody></table></div>`;
+  const dominantTraitRows=[...traitTotals.entries()].sort((a,b)=>b[1]-a[1]).slice(0,12).map(([key,weighted])=>{
+    const share=totalPopulation?weighted/totalPopulation:0;
+    return `<div class="stat-row"><div><strong>${esc(label(key))}</strong><small>population-weighted cultural pull</small></div><b>${signed(share)}</b></div>`;
+  }).join('')||'<div class="empty">No dominant traits</div>';
+  const habitabilityRows=snapshot.valleys.slice().sort((a,b)=>b.habitability-a.habitability).map(valley=>{
+    const traits=(valley.dominant_traits||[]).slice(0,2).map(item=>`${label(item.trait)} ${signed(item.score)}`).join(', ')||'neutral';
+    return `<div class="stat-row"><div><strong>${esc(valley.name)}</strong><small>dominant clan: ${esc(valley.dominant_clan||'none')}</small><small>${esc(traits)}</small></div><b>${pct(valley.habitability)}%</b></div>`;
+  }).join('');
+  document.getElementById('traits').innerHTML=`<div class="stack"><div><h3>Ancestry markers</h3><table class="trait-table"><thead><tr><th>effect</th><th>BB</th><th>Bb</th><th>bb</th></tr></thead><tbody>${geneRows}</tbody></table></div><div><h3>Dominant island traits</h3><div class="scroll-list stat-list">${dominantTraitRows}</div></div></div><div class="stack"><div><h3>Largest clans</h3><div class="scroll-list stat-list">${dominantClanRows}</div></div></div><div class="stack"><div><h3>Valley habitability</h3><div class="scroll-list stat-list">${habitabilityRows}</div></div></div>`;
+}
+
+function pieGradient(items,total){
+  if(total<=0||!items.length)return '#e6e5df';
+  let angle=0;
+  return `conic-gradient(${items.map(item=>{
+    const start=angle;
+    angle += item.population/total*360;
+    return `${item.color} ${start}deg ${angle}deg`;
+  }).join(',')})`;
+}
+
+function renderClanPies(index){
+  const snapshot=history[index];
+  document.getElementById('clanPies').innerHTML=snapshot.valleys.map(valley=>{
+    const items=(valley.clan_distribution||[]).map(item=>({
+      clan:item.clan,
+      population:item.population,
+      color:item.clan==='Other'?'#c9c4b8':clanColor(item.clan),
+    }));
+    const total=items.reduce((sum,item)=>sum+item.population,0);
+    const legend=items.map(item=>`<div class="pie-row"><span class="key"><i class="sw" style="background:${item.color}"></i>${esc(item.clan)}</span><b>${total?Math.round(item.population*100/total):0}%</b></div>`).join('')||'<div class="empty">No clans</div>';
+    return `<div class="pie-card"><h3><span>${esc(valley.name)}</span><span>${valley.population}</span></h3><div class="pie-wrap"><div class="pie" style="background:${pieGradient(items,total)}"></div><div class="stat-list pie-legend">${legend}</div></div></div>`;
+  }).join('');
 }
 
 function bars(v){return `<div class="bars"><span>genes</span><div class="bar"><i style="width:${v.population?Math.max(0,v.n_BB/v.population*100):0}%;background:#7a4b2a;float:left"></i><i style="width:${v.population?Math.max(0,v.n_Bb/v.population*100):0}%;background:#d9a05b;float:left"></i><i style="width:${v.population?Math.max(0,v.n_bb/v.population*100):0}%;background:#2e75b6;float:left"></i></div><span>food</span><div class="bar"><i style="width:${Math.min(v.food_security,1)*100}%;background:#3d8f55"></i></div><span>land</span><div class="bar"><i style="width:${v.land_health*100}%;background:#81734c"></i></div></div>`}
 
 function renderRoutes(turn){const root=document.getElementById('eventRoutes');root.innerHTML='';const seen=new Set();events.filter(e=>e.turn===turn&&e.from&&e.to).forEach(e=>{const a=names.indexOf(e.from),b=names.indexOf(e.to),key=[Math.min(a,b),Math.max(a,b),e.route].join(':');if(a<0||b<0||seen.has(key))return;seen.add(key);const line=document.createElementNS('http://www.w3.org/2000/svg','line');line.setAttribute('x1',POS[a][0]);line.setAttribute('y1',POS[a][1]);line.setAttribute('x2',POS[b][0]);line.setAttribute('y2',POS[b][1]);line.setAttribute('class','event-route '+(e.route==='canoe'?'canoe-event':''));root.appendChild(line)})}
 
+function traitSummary(valley){
+  return (valley.dominant_traits||[]).slice(0,2).map(item=>`${label(item.trait)} ${signed(item.score)}`).join(' · ')||'neutral';
+}
+
 function render(index){
   const snapshot=history[index];
   time.textContent=`turn ${snapshot.turn} · year ${snapshot.year}`;
-  valleyRoot.innerHTML=snapshot.valleys.map((v,j)=>`<article class="valley v${j}" style="--color:${COLORS[j]}"><h3><span>${esc(v.name)}</span><span class="badge">${eventBadge(snapshot.turn,v.name)}</span></h3><div class="line"><span>population</span><b>${v.population}</b></div><div class="line"><span>blue allele q</span><b>${v.q===null?'n/a':v.q.toFixed(3)}</b></div><div class="line"><span>food / land</span><b>${pct(v.food_security)}% / ${pct(v.land_health)}%</b></div>${bars(v)}<div class="clans"><strong>clans</strong> ${Object.entries(v.tribes).sort((a,b)=>b[1]-a[1]).map(([clan,pop])=>`${esc(clan)} ${pop}`).join(' · ')||'none'}</div></article>`).join('');
+  valleyRoot.innerHTML=snapshot.valleys.map((v,j)=>`<article class="valley v${j}" style="--color:${COLORS[j]}"><h3><span>${esc(v.name)}</span><span class="badge">${eventBadge(snapshot.turn,v.name)}</span></h3><div class="line"><span>population</span><b>${v.population}</b></div><div class="line"><span>blue allele q</span><b>${v.q===null?'n/a':v.q.toFixed(3)}</b></div><div class="line"><span>food / land</span><b>${pct(v.food_security)}% / ${pct(v.land_health)}%</b></div><div class="line"><span>habitability</span><b>${pct(v.habitability)}%</b></div>${bars(v)}<div class="clans"><strong>dominant clan</strong> ${esc(v.dominant_clan||'none')}<br><strong>dominant traits</strong> ${esc(traitSummary(v))}</div></article>`).join('');
   renderTraits(index);
+  renderClanPies(index);
   renderRoutes(snapshot.turn);
   eventRows.forEach(([turn,row])=>row.classList.toggle('current',turn===snapshot.turn));
   document.querySelectorAll('.marker').forEach(m=>{m.setAttribute('x1',chartX(index,m.dataset.length));m.setAttribute('x2',chartX(index,m.dataset.length))});
@@ -136,14 +180,10 @@ function makeBarChart(title,items){
 }
 
 function topClanNames(limit){
-  const peaks=new Map();
-  history.forEach(snapshot=>snapshot.valleys.forEach(valley=>Object.entries(valley.tribes).forEach(([clan,pop])=>{
-    peaks.set(clan, Math.max(peaks.get(clan)||0, pop));
-  })));
-  return [...peaks.entries()].sort((a,b)=>b[1]-a[1]).slice(0,limit).map(([name])=>name);
+  return (DATA.trackedClans||[]).slice(0,limit);
 }
 
-function clanPopulationSeries(clan){return history.map(snapshot=>snapshot.valleys.reduce((sum,valley)=>sum+(valley.tribes[clan]||0),0))}
+function clanPopulationSeries(clan){return history.map(snapshot=>snapshot.totals.population_by_clan[clan]||0)}
 function clanCumulativeDeathSeries(clan){return history.map(snapshot=>snapshot.totals.deaths_by_clan[clan]||0)}
 
 function baselineToggle(){
@@ -185,7 +225,7 @@ document.getElementById('charts').append(
   makeLineChart('Deaths per turn by source',incidentDeathSourceSeries,seriesMax(incidentDeathSourceSeries),v=>Math.round(v),{note:'Per-turn counts are the fastest way to spot specific shocks.'}),
   makeLineChart('Deaths per 1000 people by source',deathSourceRateSeries,maxDeathSourceRate,v=>v.toFixed(1),{note:'Uses previous-turn island population as the denominator.'}),
   makeLineChart('Baseline deaths per turn by life stage',baselineStageIncidentSeries,maxBaselineStageIncident,v=>Math.round(v),{note:'This splits ordinary background mortality into child, adult, and elder components.'}),
-  makeLineChart('Population by genotype',genotypePopulationSeries,maxGenotypePopulation,v=>Math.round(v),{note:'Use this instead of cumulative genotype deaths to see whether BB, Bb, or bb is actually surviving on the island.'}),
+  makeLineChart('Population by ancestry marker',genotypePopulationSeries,maxGenotypePopulation,v=>Math.round(v),{note:'Use this instead of cumulative ancestry deaths to see whether BB, Bb, or bb is actually persisting on the island.'}),
   makeLineChart('Clan populations over time',clanPopulationChartSeries,maxClanPopulation,v=>Math.round(v),{note:'V marks clan formation; X marks extinction.',seriesMarkers:clanMarkers}),
   makeLineChart('Blue-eyed population by clan',clanBbPopulationSeries,maxClanBbPopulation,v=>Math.round(v),{note:'Absolute bb counts are usually more informative than shares when clan sizes diverge. V marks clan formation; X marks extinction.',seriesMarkers:clanMarkers}),
   makeLineChart('Deaths per turn by clan',clanDeathSeries.length?clanDeathSeries:[{name:'none',key:'none',color:'#ccc',values:history.map(()=>0),life:{}}],maxClanDeaths,v=>Math.round(v),{note:'Tracked clans are the biggest lineages by peak population. V marks formation; X marks extinction.',seriesMarkers:clanMarkers}),
@@ -205,15 +245,65 @@ render(0);
 
 def export_history_html(history: List[dict], event_log: List[dict], valley_order: List[str],
                         provenance: dict, path: str = "island_replay.html") -> str:
-    data = {
-        "history": history,
-        "events": event_log,
-        "valleyOrder": valley_order,
-        "provenance": provenance,
-    }
-    html = _REPLAY_TEMPLATE.replace("__DATA__", json.dumps(data)).replace(
-        "__COLORS__", json.dumps(VALLEY_COLORS)
-    )
-    output = Path(path)
-    output.write_text(html, encoding="utf-8")
-    return str(output.resolve())
+  peaks = {}
+  for snapshot in history:
+    for clan, population in snapshot["totals"].get("population_by_clan", {}).items():
+      peaks[clan] = max(peaks.get(clan, 0), int(population))
+  tracked_clans = [
+    clan for clan, _ in sorted(peaks.items(), key=lambda item: (-item[1], item[0]))[:16]
+  ]
+
+  compact_history = []
+  for snapshot in history:
+    compact_history.append({
+      "turn": snapshot["turn"],
+      "year": snapshot["year"],
+      "valleys": [{
+        "name": valley["name"],
+        "population": valley["population"],
+        "n_BB": valley["n_BB"],
+        "n_Bb": valley["n_Bb"],
+        "n_bb": valley["n_bb"],
+        "q": valley["q"],
+        "food_security": valley["food_security"],
+        "land_health": valley["land_health"],
+        "habitability": valley["habitability"],
+        "clan_distribution": valley["clan_distribution"],
+        "dominant_clan": valley["dominant_clan"],
+        "dominant_traits": valley["dominant_traits"],
+      } for valley in snapshot["valleys"]],
+      "totals": {
+        "population": snapshot["totals"]["population"],
+        "deaths_by_source": snapshot["totals"]["deaths_by_source"],
+        "baseline_deaths_by_stage": snapshot["totals"]["baseline_deaths_by_stage"],
+        "deaths_by_genotype": snapshot["totals"]["deaths_by_genotype"],
+        "deaths_by_clan": {
+          clan: snapshot["totals"]["deaths_by_clan"].get(clan, 0)
+          for clan in tracked_clans
+        },
+        "population_by_clan": {
+          clan: snapshot["totals"]["population_by_clan"].get(clan, 0)
+          for clan in tracked_clans
+          if snapshot["totals"]["population_by_clan"].get(clan, 0) > 0
+        },
+        "bb_population_by_clan": {
+          clan: snapshot["totals"]["bb_population_by_clan"].get(clan, 0)
+          for clan in tracked_clans
+          if snapshot["totals"]["bb_population_by_clan"].get(clan, 0) > 0
+        },
+        "clan_lifecycles": snapshot["totals"]["clan_lifecycles"],
+      },
+    })
+  data = {
+    "history": compact_history,
+    "events": event_log,
+    "trackedClans": tracked_clans,
+    "valleyOrder": valley_order,
+    "provenance": provenance,
+  }
+  html = _REPLAY_TEMPLATE.replace("__DATA__", json.dumps(data)).replace(
+    "__COLORS__", json.dumps(VALLEY_COLORS)
+  )
+  output = Path(path)
+  output.write_text(html, encoding="utf-8")
+  return str(output.resolve())
